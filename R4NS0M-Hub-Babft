@@ -1,0 +1,787 @@
+--[[
+    R4NS0M Hub | Babft  -  Build A Boat For Treasure
+    Team CHX  -  UI: WindUI
+]]
+
+local VERSION        = "1.0.0"
+local HUB_NAME       = "R4NS0M Hub | Babft"
+local HUB_ICON       = "rbxassetid://107740382639133"
+local BABFT_PLACE_ID = 537413528
+local DISCORD_INVITE = "https://discord.gg/TU_INVITE" -- <- pon aqui tu invite
+local FOLDER         = "R4NS0M_Babft"
+
+if getgenv and getgenv().R4N_Babft and getgenv().R4N_Babft.Unload then
+    pcall(getgenv().R4N_Babft.Unload)
+end
+
+---------------------------------------------------------------- servicios
+local Players      = game:GetService("Players")
+local RunService   = game:GetService("RunService")
+local UIS          = game:GetService("UserInputService")
+local Lighting     = game:GetService("Lighting")
+local HttpService  = game:GetService("HttpService")
+local TeleportSvc  = game:GetService("TeleportService")
+local VirtualUser  = game:GetService("VirtualUser")
+local AssetService = game:GetService("AssetService")
+
+local LP = Players.LocalPlayer
+local Hub = { Conns = {}, Version = VERSION }
+if getgenv then getgenv().R4N_Babft = Hub end
+
+local function track(c) table.insert(Hub.Conns, c) return c end
+
+---------------------------------------------------------------- WindUI
+local WindUI = loadstring(game:HttpGet("https://github.com/Footagesus/WindUI/releases/latest/download/main.lua"))()
+
+local function notify(title, content, dur, icon)
+    pcall(function()
+        WindUI:Notify({ Title = title, Content = content or "", Duration = dur or 4, Icon = icon or "bell" })
+    end)
+end
+
+if game.PlaceId ~= BABFT_PLACE_ID then
+    notify(HUB_NAME, "Este script es solo para Build A Boat For Treasure.", 8, "alert-triangle")
+    return
+end
+
+-- Tema inspirado en el juego: mar profundo + oro del tesoro
+pcall(function()
+    WindUI:AddTheme({
+        Name        = "Treasure",
+        Accent      = Color3.fromHex("#F5B83D"),
+        Dialog      = Color3.fromHex("#0B1B2B"),
+        Outline     = Color3.fromHex("#F5B83D"),
+        Text        = Color3.fromHex("#FFF4D6"),
+        Placeholder = Color3.fromHex("#7F8EA3"),
+        Background  = Color3.fromHex("#0A1726"),
+        Button      = Color3.fromHex("#16324D"),
+        Icon        = Color3.fromHex("#F5B83D"),
+    })
+end)
+
+local Window = WindUI:CreateWindow({
+    Title       = HUB_NAME,
+    Icon        = HUB_ICON,
+    Author      = "Team CHX  -  v" .. VERSION,
+    Folder      = FOLDER,
+    Size        = UDim2.fromOffset(580, 460),
+    Theme       = "Treasure",
+    Transparent = false,
+    SideBarWidth = 190,
+})
+pcall(function() Window:SetToggleKey(Enum.KeyCode.RightShift) end)
+pcall(function()
+    Window:EditOpenButton({
+        Title = "R4NS0M", Icon = HUB_ICON, CornerRadius = UDim.new(1, 0),
+        StrokeThickness = 2, Draggable = true, Enabled = true, OnlyMobile = false,
+        Color = ColorSequence.new(Color3.fromHex("#F5B83D"), Color3.fromHex("#1E6FB8")),
+    })
+end)
+
+local ConfigManager = Window.ConfigManager
+local Config = ConfigManager and ConfigManager:CreateConfig("default")
+
+local Registered = {}
+local function reg(id, element)
+    if element then
+        Registered[id] = element
+        if Config then pcall(function() Config:Register(id, element) end) end
+    end
+    return element
+end
+
+---------------------------------------------------------------- estado
+local S = {
+    -- player
+    speedOn = false, speed = 40, jumpOn = false, jump = 100,
+    infJump = false, noclip = false, fly = false, flySpeed = 60, fullbright = false,
+    antiAfk = true,
+    -- farm
+    farm = false, stageDelay = 2.1, runLimit = 0, respawnWait = 25,
+    -- build
+    blueprint = nil, buildDelay = 0.15, batch = 3, buildY = 6,
+    -- image
+    imgBlock = "PlasticBlock", imgSource = "", imgWidth = 24, imgPixel = 2,
+    imgOrient = "Floor", imgMerge = true,
+}
+local Stats = { start = os.clock(), runs = 0, goldStart = nil }
+
+local function char() return LP.Character end
+local function hrp() local c = char() return c and c:FindFirstChild("HumanoidRootPart") end
+local function hum() local c = char() return c and c:FindFirstChildOfClass("Humanoid") end
+local function tpTo(cf) local r = hrp() if r then r.CFrame = cf end end
+
+local function findGold()
+    for _, n in ipairs({ "leaderstats", "Data", "PlayerData" }) do
+        local f = LP:FindFirstChild(n)
+        local g = f and (f:FindFirstChild("Gold") or f:FindFirstChild("gold"))
+        if g and g:IsA("ValueBase") then return g end
+    end
+end
+
+---------------------------------------------------------------- tabs
+local TabMain      = Window:Tab({ Title = "Main",          Icon = "home" })
+local TabDiscord   = Window:Tab({ Title = "Discord",       Icon = "message-circle" })
+local TabInfo      = Window:Tab({ Title = "Info",          Icon = "info" })
+local TabPlayer    = Window:Tab({ Title = "Player",        Icon = "user" })
+local TabBuild     = Window:Tab({ Title = "Auto build",    Icon = "hammer" })
+local TabImage     = Window:Tab({ Title = "Image builder", Icon = "image" })
+local TabCommunity = Window:Tab({ Title = "Community",     Icon = "users" })
+local TabFarm      = Window:Tab({ Title = "Auto farm",     Icon = "coins" })
+local TabKeys      = Window:Tab({ Title = "Keybinds",      Icon = "keyboard" })
+local TabConfigs   = Window:Tab({ Title = "Configs",       Icon = "save" })
+
+---------------------------------------------------------------- MAIN
+TabMain:Section({ Title = "Treasure Hunt" })
+TabMain:Paragraph({
+    Title = "Welcome, " .. LP.DisplayName,
+    Desc  = "Build the boat. Sail the stages. Grab the gold.\nHub v" .. VERSION .. "  -  toggle UI: RightShift",
+})
+
+local function stagesFolder()
+    local bs = workspace:FindFirstChild("BoatStages")
+    return bs and bs:FindFirstChild("NormalStages")
+end
+
+local function stagePart(i)
+    local ns = stagesFolder()
+    local st = ns and ns:FindFirstChild("CaveStage" .. i)
+    if not st then return end
+    return st:FindFirstChild("DarknessPart") or st:FindFirstChildWhichIsA("BasePart", true)
+end
+
+local function chestTrigger()
+    local ns = stagesFolder()
+    local e = ns and ns:FindFirstChild("TheEnd")
+    local c = e and e:FindFirstChild("GoldenChest")
+    return c and (c:FindFirstChild("Trigger") or c:FindFirstChildWhichIsA("BasePart", true))
+end
+
+TabMain:Section({ Title = "Teleports" })
+local stageNames = {}
+for i = 1, 10 do stageNames[i] = "Cave Stage " .. i end
+local selStage = 1
+reg("main_stage", TabMain:Dropdown({
+    Title = "Stage", Values = stageNames, Value = stageNames[1],
+    Callback = function(v) selStage = tonumber(tostring(v):match("%d+")) or 1 end,
+}))
+TabMain:Button({ Title = "Teleport to stage", Icon = "map-pin", Callback = function()
+    local p = stagePart(selStage)
+    if p then tpTo(p.CFrame + Vector3.new(0, 5, 0)) else notify("Teleport", "Stage not found.", 3, "x") end
+end })
+TabMain:Button({ Title = "Teleport to golden chest", Icon = "trophy", Callback = function()
+    local t = chestTrigger()
+    if t then tpTo(t.CFrame + Vector3.new(0, 3, 0)) else notify("Teleport", "Chest not found.", 3, "x") end
+end })
+
+TabMain:Section({ Title = "Utility" })
+reg("main_antiafk", TabMain:Toggle({ Title = "Anti AFK", Value = true, Callback = function(v) S.antiAfk = v end }))
+track(LP.Idled:Connect(function()
+    if S.antiAfk then
+        pcall(function() VirtualUser:CaptureController() VirtualUser:ClickButton2(Vector2.new()) end)
+    end
+end))
+TabMain:Button({ Title = "FPS boost", Icon = "zap", Callback = function()
+    pcall(function()
+        Lighting.GlobalShadows = false
+        Lighting.FogEnd = 9e9
+        settings().Rendering.QualityLevel = 1
+        for _, v in ipairs(workspace:GetDescendants()) do
+            if v:IsA("ParticleEmitter") or v:IsA("Trail") then v.Enabled = false end
+        end
+    end)
+    notify("FPS boost", "Applied.", 3, "zap")
+end })
+TabMain:Button({ Title = "Rejoin", Icon = "refresh-cw", Callback = function()
+    TeleportSvc:Teleport(game.PlaceId, LP)
+end })
+TabMain:Button({ Title = "Server hop", Icon = "shuffle", Callback = function()
+    local ok, res = pcall(function()
+        return HttpService:JSONDecode(game:HttpGet(
+            ("https://games.roblox.com/v1/games/%d/servers/Public?sortOrder=Asc&limit=100"):format(game.PlaceId)))
+    end)
+    if ok and res and res.data then
+        for _, s in ipairs(res.data) do
+            if s.id ~= game.JobId and s.playing < s.maxPlayers then
+                TeleportSvc:TeleportToPlaceInstance(game.PlaceId, s.id, LP)
+                return
+            end
+        end
+    end
+    notify("Server hop", "No free server found.", 4, "x")
+end })
+
+---------------------------------------------------------------- DISCORD
+TabDiscord:Paragraph({
+    Title = "R4NS0M Community",
+    Desc  = "Updates, support and blueprint sharing.",
+})
+TabDiscord:Button({ Title = "Copy Discord invite", Icon = "copy", Callback = function()
+    if setclipboard then setclipboard(DISCORD_INVITE) end
+    notify("Discord", "Invite copied to clipboard.", 3, "check")
+end })
+TabDiscord:Button({ Title = "Join Discord", Icon = "external-link", Callback = function()
+    local req = (syn and syn.request) or request or http_request
+    if req then
+        local code = DISCORD_INVITE:match("discord%.gg/(%w+)")
+        pcall(function()
+            req({
+                Url = "http://127.0.0.1:6463/rpc?v=1", Method = "POST",
+                Headers = { ["Content-Type"] = "application/json", Origin = "https://discord.com" },
+                Body = HttpService:JSONEncode({ cmd = "INVITE_BROWSER", args = { code = code }, nonce = HttpService:GenerateGUID(false) }),
+            })
+        end)
+    end
+    if setclipboard then setclipboard(DISCORD_INVITE) end
+    notify("Discord", "Invite copied (in case the app didn't open).", 4, "message-circle")
+end })
+
+---------------------------------------------------------------- INFO
+TabInfo:Section({ Title = "Hub" })
+TabInfo:Paragraph({ Title = HUB_NAME, Desc = "Version " .. VERSION .. "\nTeam CHX\nUI: WindUI" })
+TabInfo:Section({ Title = "Session" })
+local infoPara = TabInfo:Paragraph({ Title = "Live stats", Desc = "..." })
+local execName = (identifyexecutor and select(1, identifyexecutor())) or "Unknown"
+
+task.spawn(function()
+    local frames, last, fps = 0, os.clock(), 60
+    track(RunService.RenderStepped:Connect(function()
+        frames += 1
+        local now = os.clock()
+        if now - last >= 1 then fps = frames; frames = 0; last = now end
+    end))
+    while task.wait(1) do
+        if Hub.Dead then break end
+        local gold = findGold()
+        if gold and not Stats.goldStart then Stats.goldStart = gold.Value end
+        local t = math.floor(os.clock() - Stats.start)
+        local ping = 0
+        pcall(function() ping = math.floor(game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue()) end)
+        local desc = ("Executor: %s\nSession: %02d:%02d:%02d\nFPS: %d   Ping: %d ms\nFarm runs: %d")
+            :format(execName, t // 3600, (t % 3600) // 60, t % 60, fps, ping, Stats.runs)
+        if gold and Stats.goldStart then
+            desc ..= ("\nGold: %d  (+%d this session)"):format(gold.Value, gold.Value - Stats.goldStart)
+        end
+        pcall(function() infoPara:SetDesc(desc) end)
+    end
+end)
+
+---------------------------------------------------------------- PLAYER
+TabPlayer:Section({ Title = "Movement" })
+reg("pl_speed_on", TabPlayer:Toggle({ Title = "Walk speed", Value = false, Callback = function(v)
+    S.speedOn = v
+    if not v then local h = hum() if h then h.WalkSpeed = 16 end end
+end }))
+reg("pl_speed", TabPlayer:Slider({ Title = "Speed", Step = 1, Value = { Min = 16, Max = 200, Default = 40 },
+    Callback = function(v) S.speed = v end }))
+reg("pl_jump_on", TabPlayer:Toggle({ Title = "Jump power", Value = false, Callback = function(v)
+    S.jumpOn = v
+    if not v then local h = hum() if h then h.JumpPower = 50 end end
+end }))
+reg("pl_jump", TabPlayer:Slider({ Title = "Jump", Step = 1, Value = { Min = 50, Max = 300, Default = 100 },
+    Callback = function(v) S.jump = v end }))
+reg("pl_infjump", TabPlayer:Toggle({ Title = "Infinite jump", Value = false, Callback = function(v) S.infJump = v end }))
+reg("pl_noclip", TabPlayer:Toggle({ Title = "Noclip", Value = false, Callback = function(v) S.noclip = v end }))
+
+TabPlayer:Section({ Title = "Fly" })
+local flyBV
+local function setFly(v)
+    S.fly = v
+    if not v then
+        if flyBV then flyBV:Destroy() flyBV = nil end
+        local h = hum() if h then h.PlatformStand = false end
+    end
+end
+local flyToggle = reg("pl_fly", TabPlayer:Toggle({ Title = "Fly", Value = false, Callback = setFly }))
+reg("pl_flyspeed", TabPlayer:Slider({ Title = "Fly speed", Step = 1, Value = { Min = 20, Max = 200, Default = 60 },
+    Callback = function(v) S.flySpeed = v end }))
+
+TabPlayer:Section({ Title = "Visual" })
+local origLight
+reg("pl_fullbright", TabPlayer:Toggle({ Title = "Fullbright", Value = false, Callback = function(v)
+    S.fullbright = v
+    if v then
+        origLight = origLight or { Lighting.Brightness, Lighting.ClockTime, Lighting.GlobalShadows, Lighting.Ambient }
+    elseif origLight then
+        Lighting.Brightness, Lighting.ClockTime, Lighting.GlobalShadows, Lighting.Ambient = table.unpack(origLight)
+    end
+end }))
+TabPlayer:Button({ Title = "Reset character", Icon = "skull", Callback = function()
+    local h = hum() if h then h.Health = 0 end
+end })
+
+track(UIS.JumpRequest:Connect(function()
+    if S.infJump then
+        local h = hum() if h then h:ChangeState(Enum.HumanoidStateType.Jumping) end
+    end
+end))
+
+track(RunService.Stepped:Connect(function()
+    if S.noclip or S.fly then
+        local c = char()
+        if c then for _, p in ipairs(c:GetDescendants()) do
+            if p:IsA("BasePart") then p.CanCollide = false end
+        end end
+    end
+end))
+
+track(RunService.Heartbeat:Connect(function()
+    local h = hum()
+    if h then
+        if S.speedOn then h.WalkSpeed = S.speed end
+        if S.jumpOn then h.UseJumpPower = true h.JumpPower = S.jump end
+    end
+    if S.fullbright then
+        Lighting.Brightness = 2 Lighting.ClockTime = 14
+        Lighting.GlobalShadows = false Lighting.Ambient = Color3.fromRGB(200, 200, 200)
+    end
+    -- fly
+    local r = hrp()
+    if S.fly and r and h then
+        if not flyBV then
+            flyBV = Instance.new("BodyVelocity")
+            flyBV.MaxForce = Vector3.new(9e9, 9e9, 9e9)
+            flyBV.Parent = r
+        end
+        h.PlatformStand = true
+        local cam = workspace.CurrentCamera
+        local look = cam.CFrame.LookVector
+        local move = h.MoveDirection
+        local vel = move * S.flySpeed
+        if move.Magnitude > 0 then
+            local flat = Vector3.new(look.X, 0, look.Z)
+            if flat.Magnitude > 0 then
+                vel += Vector3.new(0, look.Y * move:Dot(flat.Unit) * S.flySpeed, 0)
+            end
+        end
+        if UIS:IsKeyDown(Enum.KeyCode.Space) then vel += Vector3.new(0, S.flySpeed, 0) end
+        if UIS:IsKeyDown(Enum.KeyCode.LeftShift) then vel -= Vector3.new(0, S.flySpeed, 0) end
+        flyBV.Velocity = vel
+    end
+end))
+
+---------------------------------------------------------------- AUTO FARM
+TabFarm:Section({ Title = "Gold farm" })
+TabFarm:Paragraph({
+    Title = "How it works",
+    Desc  = "Walks through every cave stage, reaches the golden chest and waits for the respawn, then repeats.",
+})
+local farmStatus = TabFarm:Paragraph({ Title = "Status", Desc = "Idle" })
+local function setStatus(t) pcall(function() farmStatus:SetDesc(t) end) end
+
+local function farmOnce()
+    if not stagesFolder() then setStatus("Stages not found (are you in the right server?)") return false end
+    for i = 1, 10 do
+        if not S.farm then return false end
+        local p = stagePart(i)
+        if p then
+            setStatus(("Stage %d / 10"):format(i))
+            tpTo(p.CFrame + Vector3.new(0, 5, 0))
+        end
+        task.wait(S.stageDelay)
+    end
+    if not S.farm then return false end
+    local t = chestTrigger()
+    if t then
+        setStatus("Golden chest")
+        tpTo(t.CFrame + Vector3.new(0, 3, 0))
+        pcall(function()
+            local r = hrp()
+            if r and firetouchinterest then
+                firetouchinterest(r, t, 0) task.wait() firetouchinterest(r, t, 1)
+            end
+        end)
+    end
+    local old, waited = char(), 0
+    setStatus("Waiting for respawn")
+    while S.farm and char() == old and waited < S.respawnWait do
+        task.wait(0.5) waited += 0.5
+    end
+    task.wait(1.5)
+    Stats.runs += 1
+    return true
+end
+
+local farmThread
+local function setFarm(v)
+    S.farm = v
+    if v and not farmThread then
+        farmThread = task.spawn(function()
+            local runs = 0
+            while S.farm do
+                if not farmOnce() then break end
+                runs += 1
+                if S.runLimit > 0 and runs >= S.runLimit then break end
+            end
+            S.farm = false
+            farmThread = nil
+            setStatus("Idle")
+        end)
+    end
+end
+local farmToggle = reg("farm_on", TabFarm:Toggle({ Title = "Auto farm gold", Value = false, Callback = setFarm }))
+reg("farm_delay", TabFarm:Slider({ Title = "Delay per stage (s)", Step = 0.1, Value = { Min = 0.5, Max = 5, Default = 2.1 },
+    Callback = function(v) S.stageDelay = v end }))
+reg("farm_limit", TabFarm:Slider({ Title = "Run limit (0 = infinite)", Step = 1, Value = { Min = 0, Max = 200, Default = 0 },
+    Callback = function(v) S.runLimit = v end }))
+reg("farm_respawn", TabFarm:Slider({ Title = "Respawn wait (s)", Step = 1, Value = { Min = 5, Max = 60, Default = 25 },
+    Callback = function(v) S.respawnWait = v end }))
+
+---------------------------------------------------------------- BLUEPRINTS (archivos)
+local fsOk = typeof(writefile) == "function" and typeof(readfile) == "function"
+    and typeof(isfolder) == "function" and typeof(makefolder) == "function" and typeof(listfiles) == "function"
+local BP_DIR, IMG_DIR = FOLDER .. "/blueprints", FOLDER .. "/images"
+if fsOk then
+    for _, d in ipairs({ FOLDER, BP_DIR, IMG_DIR }) do
+        if not isfolder(d) then pcall(makefolder, d) end
+    end
+end
+
+local function listNames(dir)
+    local out = {}
+    if not fsOk then return out end
+    local ok, files = pcall(listfiles, dir)
+    if ok then
+        for _, f in ipairs(files) do
+            local n = f:match("([^/\\]+)%.json$")
+            if n then table.insert(out, n) end
+        end
+    end
+    table.sort(out)
+    return out
+end
+
+--[[ Formato del blueprint (.json):
+{ "blocks": [ { "n":"WoodBlock", "p":[x,y,z], "r":[rx,ry,rz], "c":"RRGGBB", "s":[sx,sy,sz] }, ... ] }
+p = posicion relativa al origen (stud), r = rotacion en grados, s = escala (opcional) ]]
+local function loadBlueprint(name)
+    if not fsOk then return nil, "File system not available" end
+    local ok, data = pcall(function() return HttpService:JSONDecode(readfile(BP_DIR .. "/" .. name .. ".json")) end)
+    if not ok or type(data) ~= "table" or type(data.blocks) ~= "table" then return nil, "Invalid blueprint" end
+    for _, b in ipairs(data.blocks) do b.r = b.r or { 0, 0, 0 } end
+    return data.blocks
+end
+
+---------------------------------------------------------------- BUILD ENGINE
+local Build = { running = false, done = 0, total = 0 }
+
+--[[ ADAPTADOR DE COLOCACION
+    Aqui es donde se habla con el servidor del juego. Hay que completarlo con la
+    firma real del remote del BuildingTool (se saca con SimpleSpy/Dex colocando 1 bloque).
+    Se puede sobrescribir desde fuera:  getgenv().R4N_Babft.PlaceBlock = function(b, cf) ... end
+    b  = { n = nombre, c = "RRGGBB", s = {x,y,z} }     cf = CFrame mundo
+    Debe devolver: true  |  false, "motivo"
+]]
+Hub.PlaceBlock = function(b, cf)
+    return false, "PlaceBlock adapter not configured yet (see 'Inspect building tool')"
+end
+
+local function buildingTool()
+    return (LP.Backpack and LP.Backpack:FindFirstChild("BuildingTool"))
+        or (char() and char():FindFirstChild("BuildingTool"))
+end
+
+local function inspectTool()
+    local tool = buildingTool()
+    if not tool then notify("Build", "BuildingTool not found (equip/have the build tool).", 4, "x") return end
+    print("[R4NS0M] BuildingTool:", tool:GetFullName())
+    for _, d in ipairs(tool:GetDescendants()) do
+        print("  ", d.ClassName, d:GetFullName())
+    end
+    notify("Build", "Tool tree printed to console (F9).", 4, "terminal")
+end
+
+local function runBuild(blocks)
+    if Build.running then notify("Build", "Already building.", 3, "alert-circle") return end
+    local r = hrp()
+    if not r then return end
+    Build.running, Build.done, Build.total = true, 0, #blocks
+    local origin = CFrame.new(r.Position + Vector3.new(0, S.buildY, 0))
+    task.spawn(function()
+        for i, b in ipairs(blocks) do
+            if not Build.running then break end
+            local rot = CFrame.Angles(math.rad(b.r[1]), math.rad(b.r[2]), math.rad(b.r[3]))
+            local cf = origin * CFrame.new(b.p[1], b.p[2], b.p[3]) * rot
+            local ok, res, why = pcall(Hub.PlaceBlock, b, cf)
+            if not ok or res == false then
+                notify("Build stopped", tostring(ok and why or res), 6, "x")
+                break
+            end
+            Build.done = i
+            if i % math.max(1, S.batch) == 0 then task.wait(S.buildDelay) end
+        end
+        local finished = Build.done == Build.total
+        Build.running = false
+        notify("Build", finished and "Finished." or ("Stopped at %d / %d"):format(Build.done, Build.total), 4, finished and "check" or "square")
+    end)
+end
+
+---------------------------------------------------------------- AUTO BUILD
+TabBuild:Section({ Title = "Blueprints" })
+local bpDropdown = TabBuild:Dropdown({ Title = "Blueprint", Values = listNames(BP_DIR), Value = nil,
+    Callback = function(v) S.blueprint = v end })
+local function refreshBP()
+    pcall(function() bpDropdown:Refresh(listNames(BP_DIR)) end)
+end
+TabBuild:Button({ Title = "Refresh list", Icon = "refresh-cw", Callback = refreshBP })
+TabBuild:Paragraph({ Title = "Folder", Desc = "workspace/" .. BP_DIR })
+
+TabBuild:Section({ Title = "Settings" })
+reg("bd_delay", TabBuild:Slider({ Title = "Delay between batches (s)", Step = 0.05, Value = { Min = 0.05, Max = 1, Default = 0.15 },
+    Callback = function(v) S.buildDelay = v end }))
+reg("bd_batch", TabBuild:Slider({ Title = "Blocks per batch", Step = 1, Value = { Min = 1, Max = 10, Default = 3 },
+    Callback = function(v) S.batch = v end }))
+reg("bd_y", TabBuild:Slider({ Title = "Height offset (studs)", Step = 1, Value = { Min = 0, Max = 40, Default = 6 },
+    Callback = function(v) S.buildY = v end }))
+
+TabBuild:Section({ Title = "Build" })
+local bpProgress = TabBuild:Paragraph({ Title = "Progress", Desc = "Idle" })
+TabBuild:Button({ Title = "Build selected blueprint", Icon = "hammer", Callback = function()
+    if not S.blueprint then notify("Build", "Select a blueprint first.", 3, "alert-circle") return end
+    local blocks, err = loadBlueprint(S.blueprint)
+    if not blocks then notify("Build", err, 4, "x") return end
+    runBuild(blocks)
+end })
+TabBuild:Button({ Title = "Stop", Icon = "square", Callback = function() Build.running = false end })
+TabBuild:Button({ Title = "Inspect building tool", Icon = "search", Callback = inspectTool })
+
+task.spawn(function()
+    while task.wait(0.5) do
+        if Hub.Dead then break end
+        if Build.running then
+            pcall(function() bpProgress:SetDesc(("%d / %d blocks"):format(Build.done, Build.total)) end)
+        end
+    end
+end)
+
+---------------------------------------------------------------- IMAGE BUILDER
+-- devuelve { w, h, px = { "RRGGBB" | false, ... } } (false = transparente)
+local function hex(r, g, b) return ("%02X%02X%02X"):format(r, g, b) end
+
+local function fetchPixels(src, targetW)
+    src = src:gsub("^%s+", ""):gsub("%s+$", "")
+    if src == "" then return nil, "Enter an asset ID, file name or URL" end
+
+    -- 1) JSON (archivo o URL): { "w":N, "h":N, "px":["RRGGBB", ...] }
+    local raw
+    if src:match("^https?://") then
+        local ok, res = pcall(game.HttpGet, game, src)
+        if ok then raw = res end
+    elseif fsOk and not src:match("^%d+$") then
+        local ok, res = pcall(readfile, IMG_DIR .. "/" .. src:gsub("%.json$", "") .. ".json")
+        if ok then raw = res end
+    end
+    if raw then
+        local ok, d = pcall(HttpService.JSONDecode, HttpService, raw)
+        if ok and type(d) == "table" and d.w and d.h and d.px then return d end
+        return nil, "Invalid pixel JSON"
+    end
+
+    -- 2) asset id via EditableImage
+    local id = src:match("(%d+)")
+    if not id then return nil, "File not found" end
+    local ok, img = pcall(function()
+        return AssetService:CreateEditableImageAsync(Content.fromAssetId(tonumber(id)))
+    end)
+    if not ok or not img then return nil, "Executor can't read that asset (EditableImage unavailable)" end
+    local sz = img.Size
+    local buf = img:ReadPixelsBuffer(Vector2.zero, sz)
+    local w = math.min(targetW, sz.X)
+    local h = math.max(1, math.floor(sz.Y * (w / sz.X)))
+    local px = table.create(w * h, false)
+    for y = 0, h - 1 do
+        for x = 0, w - 1 do
+            local sx = math.min(sz.X - 1, math.floor((x + 0.5) * sz.X / w))
+            local sy = math.min(sz.Y - 1, math.floor((y + 0.5) * sz.Y / h))
+            local o = (sy * sz.X + sx) * 4
+            if buffer.readu8(buf, o + 3) >= 128 then
+                px[y * w + x + 1] = hex(buffer.readu8(buf, o), buffer.readu8(buf, o + 1), buffer.readu8(buf, o + 2))
+            end
+        end
+    end
+    pcall(function() img:Destroy() end)
+    return { w = w, h = h, px = px }
+end
+
+local function pixelsToBlocks(d)
+    local blocks = {}
+    local ps = S.imgPixel
+    local w, h = d.w, d.h
+    local function add(x0, y, run, color)
+        local cx = (x0 + (run - 1) / 2 - (w - 1) / 2) * ps
+        local cy = ((h - 1) / 2 - y) * ps
+        local b = { n = S.imgBlock, c = color }
+        if S.imgOrient == "Floor" then
+            b.p = { cx, 0, -cy } b.r = { 0, 0, 0 } b.s = { run * ps, ps, ps }
+        elseif S.imgOrient == "Wall X" then
+            b.p = { cx, cy + (h * ps) / 2, 0 } b.r = { 0, 0, 0 } b.s = { run * ps, ps, ps }
+        else -- Wall Z
+            b.p = { 0, cy + (h * ps) / 2, cx } b.r = { 0, 90, 0 } b.s = { run * ps, ps, ps }
+        end
+        blocks[#blocks + 1] = b
+    end
+    for y = 0, h - 1 do
+        local x = 0
+        while x < w do
+            local c = d.px[y * w + x + 1]
+            if c then
+                local run = 1
+                if S.imgMerge then
+                    while x + run < w and d.px[y * w + x + run + 1] == c do run += 1 end
+                end
+                add(x, y, run, c)
+                x += run
+            else
+                x += 1
+            end
+        end
+    end
+    return blocks
+end
+
+TabImage:Section({ Title = "Source" })
+TabImage:Paragraph({
+    Title = "Supported sources",
+    Desc  = "- Image asset ID (rbxassetid)\n- Pixel JSON file in workspace/" .. IMG_DIR .. "\n- URL to a pixel JSON",
+})
+reg("im_src", TabImage:Input({ Title = "Asset ID / file / URL", Placeholder = "e.g. 107740382639133", Callback = function(v) S.imgSource = v end }))
+
+TabImage:Section({ Title = "Settings" })
+reg("im_block", TabImage:Input({ Title = "Block name", Value = "PlasticBlock", Placeholder = "PlasticBlock", Callback = function(v)
+    if v and v ~= "" then S.imgBlock = v end
+end }))
+reg("im_w", TabImage:Slider({ Title = "Resolution (width in pixels)", Step = 1, Value = { Min = 8, Max = 64, Default = 24 },
+    Callback = function(v) S.imgWidth = v end }))
+reg("im_ps", TabImage:Slider({ Title = "Pixel size (studs)", Step = 0.5, Value = { Min = 1, Max = 4, Default = 2 },
+    Callback = function(v) S.imgPixel = v end }))
+reg("im_orient", TabImage:Dropdown({ Title = "Orientation", Values = { "Floor", "Wall X", "Wall Z" }, Value = "Floor",
+    Callback = function(v) S.imgOrient = v end }))
+reg("im_merge", TabImage:Toggle({ Title = "Merge same-color runs (fewer blocks)", Value = true, Callback = function(v) S.imgMerge = v end }))
+
+TabImage:Section({ Title = "Build" })
+local imgInfo = TabImage:Paragraph({ Title = "Preview info", Desc = "Press Analyze to count blocks." })
+local imgBlocks
+TabImage:Button({ Title = "Analyze image", Icon = "scan", Callback = function()
+    local ok, d, err = pcall(fetchPixels, S.imgSource, S.imgWidth)
+    if not ok then notify("Image", tostring(d), 5, "x") return end
+    if not d then notify("Image", tostring(err), 5, "x") return end
+    imgBlocks = pixelsToBlocks(d)
+    pcall(function()
+        imgInfo:SetDesc(("%dx%d px  ->  %d blocks  (%.0f x %.0f studs)")
+            :format(d.w, d.h, #imgBlocks, d.w * S.imgPixel, d.h * S.imgPixel))
+    end)
+end })
+TabImage:Button({ Title = "Build image", Icon = "hammer", Callback = function()
+    if not imgBlocks or #imgBlocks == 0 then notify("Image", "Analyze an image first.", 3, "alert-circle") return end
+    runBuild(imgBlocks)
+end })
+TabImage:Button({ Title = "Save as blueprint", Icon = "save", Callback = function()
+    if not imgBlocks or not fsOk then notify("Image", "Analyze an image first.", 3, "alert-circle") return end
+    local name = "image_" .. os.time()
+    writefile(BP_DIR .. "/" .. name .. ".json", HttpService:JSONEncode({ blocks = imgBlocks }))
+    refreshBP()
+    notify("Image", "Saved as " .. name, 4, "check")
+end })
+TabImage:Button({ Title = "Stop", Icon = "square", Callback = function() Build.running = false end })
+
+---------------------------------------------------------------- COMMUNITY
+TabCommunity:Section({ Title = "Share blueprints" })
+local impName, impUrl = "", ""
+TabCommunity:Input({ Title = "Blueprint URL (raw JSON)", Placeholder = "https://...", Callback = function(v) impUrl = v end })
+TabCommunity:Input({ Title = "Save as", Placeholder = "my_boat", Callback = function(v) impName = v end })
+TabCommunity:Button({ Title = "Import blueprint", Icon = "download", Callback = function()
+    if not fsOk then notify("Community", "File system not available.", 3, "x") return end
+    if not impUrl:match("^https?://") or impName == "" then
+        notify("Community", "Fill the URL and a name.", 3, "alert-circle") return
+    end
+    local ok, raw = pcall(game.HttpGet, game, impUrl)
+    local valid = ok and pcall(function()
+        local d = HttpService:JSONDecode(raw)
+        assert(type(d.blocks) == "table")
+    end)
+    if not valid then notify("Community", "That URL isn't a valid blueprint.", 4, "x") return end
+    writefile(BP_DIR .. "/" .. impName:gsub("[^%w_%-]", "_") .. ".json", raw)
+    refreshBP()
+    notify("Community", "Imported: " .. impName, 4, "check")
+end })
+TabCommunity:Button({ Title = "Copy selected blueprint (share)", Icon = "share-2", Callback = function()
+    if not S.blueprint or not fsOk then notify("Community", "Select a blueprint in Auto build.", 3, "alert-circle") return end
+    if setclipboard then setclipboard(readfile(BP_DIR .. "/" .. S.blueprint .. ".json")) end
+    notify("Community", "Blueprint JSON copied.", 3, "check")
+end })
+TabCommunity:Paragraph({
+    Title = "Tip",
+    Desc  = "Paste the copied JSON into a raw paste/gist and share the link so others can import it.",
+})
+
+---------------------------------------------------------------- KEYBINDS
+TabKeys:Section({ Title = "Hotkeys" })
+TabKeys:Paragraph({ Title = "UI", Desc = "Toggle the window with RightShift." })
+reg("kb_fly", TabKeys:Keybind({ Title = "Toggle fly", Value = "F", Callback = function()
+    pcall(function() flyToggle:Set(not S.fly) end)
+    if not flyToggle or not flyToggle.Set then setFly(not S.fly) end
+end }))
+reg("kb_noclip", TabKeys:Keybind({ Title = "Toggle noclip", Value = "N", Callback = function()
+    S.noclip = not S.noclip
+    notify("Noclip", S.noclip and "On" or "Off", 2, "ghost")
+end }))
+reg("kb_farm", TabKeys:Keybind({ Title = "Toggle auto farm", Value = "G", Callback = function()
+    pcall(function() farmToggle:Set(not S.farm) end)
+    if not farmToggle or not farmToggle.Set then setFarm(not S.farm) end
+end }))
+reg("kb_stop", TabKeys:Keybind({ Title = "Stop building", Value = "K", Callback = function() Build.running = false end }))
+
+---------------------------------------------------------------- CONFIGS
+TabConfigs:Section({ Title = "Configs" })
+local cfgName = "default"
+local cfgDropdown = TabConfigs:Dropdown({
+    Title = "Saved configs",
+    Values = (ConfigManager and ConfigManager:AllConfigs()) or { "default" },
+    Value = "default",
+    Callback = function(v) cfgName = v end,
+})
+TabConfigs:Input({ Title = "Config name", Placeholder = "default", Callback = function(v) if v ~= "" then cfgName = v end end })
+local function refreshCfg()
+    pcall(function() cfgDropdown:Refresh(ConfigManager:AllConfigs()) end)
+end
+TabConfigs:Button({ Title = "Save", Icon = "save", Callback = function()
+    local c = ConfigManager:CreateConfig(cfgName)
+    for id, el in pairs(Registered) do pcall(function() c:Register(id, el) end) end
+    c:Save()
+    refreshCfg()
+    notify("Configs", "Saved: " .. cfgName, 3, "check")
+end })
+TabConfigs:Button({ Title = "Load", Icon = "folder-open", Callback = function()
+    local c = ConfigManager:CreateConfig(cfgName)
+    for id, el in pairs(Registered) do pcall(function() c:Register(id, el) end) end
+    c:Load()
+    notify("Configs", "Loaded: " .. cfgName, 3, "check")
+end })
+TabConfigs:Button({ Title = "Delete", Icon = "trash-2", Callback = function()
+    pcall(function() ConfigManager:DeleteConfig(cfgName) end)
+    refreshCfg()
+    notify("Configs", "Deleted: " .. cfgName, 3, "trash-2")
+end })
+
+TabConfigs:Section({ Title = "Appearance" })
+local themes = {}
+pcall(function() for n in pairs(WindUI:GetThemes()) do table.insert(themes, n) end end)
+table.sort(themes)
+if #themes > 0 then
+    TabConfigs:Dropdown({ Title = "Theme", Values = themes, Value = "Treasure", Callback = function(v)
+        pcall(function() WindUI:SetTheme(v) end)
+    end })
+end
+
+TabConfigs:Section({ Title = "Hub" })
+function Hub.Unload()
+    Hub.Dead = true
+    S.farm, Build.running = false, false
+    setFly(false)
+    for _, c in ipairs(Hub.Conns) do pcall(function() c:Disconnect() end) end
+    pcall(function() Window:Destroy() end)
+end
+TabConfigs:Button({ Title = "Unload hub", Icon = "power", Callback = Hub.Unload })
+
+Window:SelectTab(1)
+notify(HUB_NAME, "Loaded v" .. VERSION, 4, "anchor")

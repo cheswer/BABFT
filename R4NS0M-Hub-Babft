@@ -9,6 +9,9 @@ local HUB_ICON       = "rbxassetid://107740382639133"
 local BABFT_PLACE_ID = 537413528
 local DISCORD_INVITE = "https://discord.gg/TU_INVITE" -- <- pon aqui tu invite
 local FOLDER         = "R4NS0M_Babft"
+-- Catalogo en la nube (Firebase Realtime Database, solo la URL base, sin "/" al final)
+local CLOUD_URL      = "https://TU_PROYECTO-default-rtdb.firebaseio.com"
+local HIDE_AT_REPORTS = 5   -- obras con este numero de reportes se ocultan del catalogo
 
 if getgenv and getgenv().R4N_Babft and getgenv().R4N_Babft.Unload then
     pcall(getgenv().R4N_Babft.Unload)
@@ -23,6 +26,7 @@ local HttpService  = game:GetService("HttpService")
 local TeleportSvc  = game:GetService("TeleportService")
 local VirtualUser  = game:GetService("VirtualUser")
 local AssetService = game:GetService("AssetService")
+local MarketplaceService = game:GetService("MarketplaceService")
 
 local LP = Players.LocalPlayer
 local Hub = { Conns = {}, Version = VERSION }
@@ -59,9 +63,36 @@ pcall(function()
     })
 end)
 
+-- Los IDs de "imagen" que se sacan del catalogo suelen ser Decals: un Decal no se
+-- dibuja en un ImageLabel. Se resuelve a la textura real antes de dar el icono a WindUI.
+local function resolveIcon(id)
+    local fallback = "rbxassetid://" .. id
+    local ok, tex = pcall(function()
+        local objs = game:GetObjects("rbxassetid://" .. id)
+        local o = objs and objs[1]
+        if not o then return nil end
+        local t
+        if o:IsA("Decal") or o:IsA("Texture") then t = o.Texture
+        elseif o:IsA("ImageLabel") or o:IsA("ImageButton") then t = o.Image
+        else
+            local d = o:FindFirstChildWhichIsA("Decal", true)
+            t = d and d.Texture
+        end
+        pcall(function() o:Destroy() end)
+        return t
+    end)
+    if ok and type(tex) == "string" and tex ~= "" then
+        local real = tex:match("id=(%d+)") or tex:match("rbxassetid://(%d+)")
+        if real then return "rbxassetid://" .. real end
+        return tex
+    end
+    return fallback
+end
+local ICON = resolveIcon(HUB_ICON:match("%d+") or "")
+
 local Window = WindUI:CreateWindow({
     Title       = HUB_NAME,
-    Icon        = HUB_ICON,
+    Icon        = ICON,
     Author      = "Team CHX  -  v" .. VERSION,
     Folder      = FOLDER,
     Size        = UDim2.fromOffset(580, 460),
@@ -72,7 +103,7 @@ local Window = WindUI:CreateWindow({
 pcall(function() Window:SetToggleKey(Enum.KeyCode.RightShift) end)
 pcall(function()
     Window:EditOpenButton({
-        Title = "R4NS0M", Icon = HUB_ICON, CornerRadius = UDim.new(1, 0),
+        Title = "R4NS0M", Icon = ICON, CornerRadius = UDim.new(1, 0),
         StrokeThickness = 2, Draggable = true, Enabled = true, OnlyMobile = false,
         Color = ColorSequence.new(Color3.fromHex("#F5B83D"), Color3.fromHex("#1E6FB8")),
     })
@@ -98,6 +129,11 @@ local S = {
     antiAfk = true,
     -- farm
     farm = false, stageDelay = 2.1, runLimit = 0, respawnWait = 25,
+    platforms = true, platSize = 14,
+    -- slots / comunidad
+    boatPath = "", slotName = "", slotNew = "", slotsUnlock = false,
+    catSearch = "", catBrowse = "All", catSort = "Newest", repReason = "Inappropriate content",
+    upBP = nil, upTitle = "", upDesc = "", upRename = "",
     -- build
     blueprint = nil, buildDelay = 0.15, batch = 3, buildY = 6,
     -- image
@@ -120,7 +156,7 @@ local function findGold()
 end
 
 ---------------------------------------------------------------- tabs
-local TabMain      = Window:Tab({ Title = "Main",          Icon = "home" })
+local TabMain      = Window:Tab({ Title = "Main",          Icon = "anchor" })
 local TabDiscord   = Window:Tab({ Title = "Discord",       Icon = "message-circle" })
 local TabInfo      = Window:Tab({ Title = "Info",          Icon = "info" })
 local TabPlayer    = Window:Tab({ Title = "Player",        Icon = "user" })
@@ -360,6 +396,35 @@ track(RunService.Heartbeat:Connect(function()
     end
 end))
 
+---------------------------------------------------------------- PLATAFORMAS (solo cliente)
+local Platforms = {}
+local function platform(key, pos)
+    local pl = Platforms[key]
+    if not pl or not pl.Parent then
+        pl = Instance.new("Part")
+        pl.Name = "R4N_Platform"
+        pl.Anchored = true pl.CanCollide = true pl.CanQuery = false pl.CanTouch = false
+        pl.CastShadow = false
+        pl.Material = Enum.Material.Neon
+        pl.Color = Color3.fromHex("#F5B83D")
+        pl.Transparency = 0.55
+        pl.Parent = workspace
+        Platforms[key] = pl
+    end
+    pl.Size = Vector3.new(S.platSize, 1, S.platSize)
+    pl.CFrame = CFrame.new(pos)
+    return pl
+end
+local function clearPlatforms()
+    for k, pl in pairs(Platforms) do pcall(function() pl:Destroy() end) Platforms[k] = nil end
+end
+local function buildAllPlatforms()
+    for i = 1, 10 do
+        local sp = stagePart(i)
+        if sp then platform(i, sp.Position + Vector3.new(0, 1.5, 0)) end
+    end
+end
+
 ---------------------------------------------------------------- AUTO FARM
 TabFarm:Section({ Title = "Gold farm" })
 TabFarm:Paragraph({
@@ -376,6 +441,7 @@ local function farmOnce()
         local p = stagePart(i)
         if p then
             setStatus(("Stage %d / 10"):format(i))
+            if S.platforms then platform(i, p.Position + Vector3.new(0, 1.5, 0)) end
             tpTo(p.CFrame + Vector3.new(0, 5, 0))
         end
         task.wait(S.stageDelay)
@@ -405,7 +471,9 @@ end
 local farmThread
 local function setFarm(v)
     S.farm = v
+    if not v then clearPlatforms() end
     if v and not farmThread then
+        if S.platforms then buildAllPlatforms() end
         farmThread = task.spawn(function()
             local runs = 0
             while S.farm do
@@ -415,6 +483,7 @@ local function setFarm(v)
             end
             S.farm = false
             farmThread = nil
+            clearPlatforms()
             setStatus("Idle")
         end)
     end
@@ -426,6 +495,14 @@ reg("farm_limit", TabFarm:Slider({ Title = "Run limit (0 = infinite)", Step = 1,
     Callback = function(v) S.runLimit = v end }))
 reg("farm_respawn", TabFarm:Slider({ Title = "Respawn wait (s)", Step = 1, Value = { Min = 5, Max = 60, Default = 25 },
     Callback = function(v) S.respawnWait = v end }))
+reg("farm_plat", TabFarm:Toggle({ Title = "Safe platform on every stage (only you see it)", Value = true, Callback = function(v)
+    S.platforms = v
+    if S.farm then if v then buildAllPlatforms() else clearPlatforms() end end
+end }))
+reg("farm_platsize", TabFarm:Slider({ Title = "Platform size", Step = 1, Value = { Min = 8, Max = 30, Default = 14 },
+    Callback = function(v) S.platSize = v
+        for _, pl in pairs(Platforms) do pl.Size = Vector3.new(v, 1, v) end
+    end }))
 
 ---------------------------------------------------------------- BLUEPRINTS (archivos)
 local fsOk = typeof(writefile) == "function" and typeof(readfile) == "function"
@@ -451,6 +528,32 @@ local function listNames(dir)
     return out
 end
 
+local function num(v, lim)
+    if type(v) ~= "number" or v ~= v then return 0 end
+    return math.clamp(v, -lim, lim)
+end
+-- sanea cualquier blueprint (local, nube o importado): limita tamaños y valores raros
+local function cleanBlocks(list)
+    if type(list) ~= "table" then return nil end
+    local out = {}
+    for i = 1, math.min(#list, 8000) do
+        local b = list[i]
+        if type(b) == "table" and type(b.n) == "string" and type(b.p) == "table" then
+            local nb = { n = b.n:sub(1, 40), p = { num(b.p[1], 3000), num(b.p[2], 3000), num(b.p[3], 3000) } }
+            local r = type(b.r) == "table" and b.r or { 0, 0, 0 }
+            nb.r = { num(r[1], 360), num(r[2], 360), num(r[3], 360) }
+            if type(b.c) == "string" and b.c:match("^%x%x%x%x%x%x$") then nb.c = b.c end
+            if type(b.s) == "table" then
+                nb.s = { math.clamp(math.abs(num(b.s[1], 64)), 0.1, 64),
+                         math.clamp(math.abs(num(b.s[2], 64)), 0.1, 64),
+                         math.clamp(math.abs(num(b.s[3], 64)), 0.1, 64) }
+            end
+            out[#out + 1] = nb
+        end
+    end
+    return out
+end
+
 --[[ Formato del blueprint (.json):
 { "blocks": [ { "n":"WoodBlock", "p":[x,y,z], "r":[rx,ry,rz], "c":"RRGGBB", "s":[sx,sy,sz] }, ... ] }
 p = posicion relativa al origen (stud), r = rotacion en grados, s = escala (opcional) ]]
@@ -458,8 +561,178 @@ local function loadBlueprint(name)
     if not fsOk then return nil, "File system not available" end
     local ok, data = pcall(function() return HttpService:JSONDecode(readfile(BP_DIR .. "/" .. name .. ".json")) end)
     if not ok or type(data) ~= "table" or type(data.blocks) ~= "table" then return nil, "Invalid blueprint" end
-    for _, b in ipairs(data.blocks) do b.r = b.r or { 0, 0, 0 } end
-    return data.blocks
+    local clean = cleanBlocks(data.blocks)
+    if not clean or #clean == 0 then return nil, "Empty blueprint" end
+    return clean
+end
+
+local function r2(n) return math.floor(n * 100 + 0.5) / 100 end
+
+local function safeName(n)
+    n = tostring(n or ""):gsub("[^%w_%- ]", "_"):gsub("^%s+", ""):gsub("%s+$", "")
+    return n:sub(1, 40)
+end
+
+local function saveBlueprint(name, blocks)
+    if not fsOk then return false, "File system not available" end
+    name = safeName(name)
+    if name == "" then return false, "Invalid name" end
+    writefile(BP_DIR .. "/" .. name .. ".json", HttpService:JSONEncode({ blocks = blocks }))
+    return true, name
+end
+
+---------------------------------------------------------------- LEER MI BARCO
+local function resolvePath(str)
+    local cur = game
+    for part in str:gmatch("[^%.]+") do
+        if part == "game" then cur = game
+        elseif part == "workspace" then cur = workspace
+        else cur = cur and cur:FindFirstChild(part) end
+    end
+    return cur
+end
+
+local function hasParts(i)
+    return i and not i:FindFirstChildOfClass("Humanoid") and i:FindFirstChildWhichIsA("BasePart", true) ~= nil
+end
+
+local function findBoat()
+    if S.boatPath ~= "" then
+        local r = resolvePath(S.boatPath)
+        return hasParts(r) and r or nil
+    end
+    local names = { LP.Name, LP.DisplayName }
+    if LP.Team then table.insert(names, LP.Team.Name) end
+    local roots = { workspace, workspace:FindFirstChild("Blocks"), workspace:FindFirstChild("Boats"), workspace:FindFirstChild("Players") }
+    for _, root in ipairs(roots) do
+        if root then
+            for _, n in ipairs(names) do
+                local c = root:FindFirstChild(n)
+                if c and c ~= char() and hasParts(c) then return c end
+            end
+        end
+    end
+end
+
+local function collectBoat(container)
+    local items = {}
+    for _, ch in ipairs(container:GetChildren()) do
+        local cf, size, color
+        if ch:IsA("Model") then
+            cf, size = ch:GetPivot(), ch:GetExtentsSize()
+            local bp = ch:FindFirstChildWhichIsA("BasePart", true)
+            color = bp and bp.Color
+        elseif ch:IsA("BasePart") then
+            cf, size, color = ch.CFrame, ch.Size, ch.Color
+        end
+        if cf then items[#items + 1] = { n = ch.Name, cf = cf, size = size, color = color } end
+    end
+    if #items == 0 then return nil end
+    local sx, sz, minY = 0, 0, math.huge
+    for _, it in ipairs(items) do
+        sx += it.cf.Position.X sz += it.cf.Position.Z
+        minY = math.min(minY, it.cf.Position.Y - it.size.Y / 2)
+    end
+    local ref = Vector3.new(sx / #items, minY, sz / #items)
+    local out = {}
+    for i, it in ipairs(items) do
+        local pos = it.cf.Position - ref
+        local rx, ry, rz = (it.cf - it.cf.Position):ToEulerAnglesXYZ()
+        out[i] = {
+            n = it.n,
+            p = { r2(pos.X), r2(pos.Y), r2(pos.Z) },
+            r = { r2(math.deg(rx)), r2(math.deg(ry)), r2(math.deg(rz)) },
+            c = it.color and it.color:ToHex():upper() or nil,
+            s = { r2(it.size.X), r2(it.size.Y), r2(it.size.Z) },
+        }
+    end
+    return out
+end
+
+---------------------------------------------------------------- PREVIEW (ViewportFrame)
+local PreviewGui, PreviewConn
+local function destroyPreview()
+    if PreviewConn then PreviewConn:Disconnect() PreviewConn = nil end
+    if PreviewGui then pcall(function() PreviewGui:Destroy() end) PreviewGui = nil end
+end
+
+local function showPreview(blocks, title)
+    destroyPreview()
+    if not blocks or #blocks == 0 then notify("Preview", "Nothing to preview.", 3, "x") return end
+    local gui = Instance.new("ScreenGui")
+    gui.Name = "R4N_BabftPreview" gui.ResetOnSpawn = false gui.DisplayOrder = 999
+    local okp = pcall(function() gui.Parent = (gethui and gethui()) or game:GetService("CoreGui") end)
+    if not okp or not gui.Parent then gui.Parent = LP:WaitForChild("PlayerGui") end
+    PreviewGui = gui
+
+    local function corner(o, r) local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, r) c.Parent = o end
+    local frame = Instance.new("Frame")
+    frame.Size = UDim2.fromOffset(340, 340)
+    frame.Position = UDim2.new(0.5, -170, 0.5, -170)
+    frame.BackgroundColor3 = Color3.fromHex("#0A1726")
+    frame.Active = true frame.Draggable = true
+    frame.Parent = gui
+    corner(frame, 12)
+    local stroke = Instance.new("UIStroke") stroke.Color = Color3.fromHex("#F5B83D") stroke.Thickness = 1.5 stroke.Parent = frame
+
+    local function label(text, pos, size)
+        local l = Instance.new("TextLabel")
+        l.BackgroundTransparency = 1 l.Text = text l.Position = pos l.Size = size
+        l.TextColor3 = Color3.fromHex("#FFF4D6") l.Font = Enum.Font.GothamBold l.TextSize = 14
+        l.TextXAlignment = Enum.TextXAlignment.Left l.TextTruncate = Enum.TextTruncate.AtEnd
+        l.Parent = frame
+        return l
+    end
+    local function button(text, pos, size, cb)
+        local b = Instance.new("TextButton")
+        b.Text = text b.Position = pos b.Size = size b.AutoButtonColor = true
+        b.BackgroundColor3 = Color3.fromHex("#16324D") b.TextColor3 = Color3.fromHex("#F5B83D")
+        b.Font = Enum.Font.GothamBold b.TextSize = 14 b.Parent = frame
+        corner(b, 8)
+        b.MouseButton1Click:Connect(cb)
+        return b
+    end
+
+    label(("%s  (%d blocks)"):format(title or "Preview", #blocks), UDim2.fromOffset(12, 6), UDim2.new(1, -52, 0, 26))
+    button("X", UDim2.new(1, -36, 0, 6), UDim2.fromOffset(28, 26), destroyPreview)
+
+    local vp = Instance.new("ViewportFrame")
+    vp.Size = UDim2.new(1, -16, 1, -84) vp.Position = UDim2.fromOffset(8, 38)
+    vp.BackgroundColor3 = Color3.fromHex("#0E2238")
+    vp.Ambient = Color3.fromRGB(150, 150, 150) vp.LightColor = Color3.fromRGB(255, 244, 214)
+    vp.Parent = frame
+    corner(vp, 8)
+    local cam = Instance.new("Camera") cam.FieldOfView = 55 cam.Parent = vp vp.CurrentCamera = cam
+    local model = Instance.new("Model") model.Parent = vp
+
+    local step = math.max(1, math.ceil(#blocks / 2500))
+    local mn, mx = Vector3.new(9e9, 9e9, 9e9), Vector3.new(-9e9, -9e9, -9e9)
+    for i = 1, #blocks, step do
+        local b = blocks[i]
+        local sz = b.s or { 2, 2, 2 }
+        local part = Instance.new("Part")
+        part.Anchored = true part.CanCollide = false part.CastShadow = false
+        part.Material = Enum.Material.SmoothPlastic
+        part.Size = Vector3.new(sz[1], sz[2], sz[3])
+        part.Color = Color3.fromHex(b.c or "A0A0A0")
+        part.CFrame = CFrame.new(b.p[1], b.p[2], b.p[3])
+            * CFrame.Angles(math.rad(b.r[1]), math.rad(b.r[2]), math.rad(b.r[3]))
+        part.Parent = model
+        local h = math.max(sz[1], sz[2], sz[3]) / 2
+        mn = mn:Min(part.Position - Vector3.new(h, h, h))
+        mx = mx:Max(part.Position + Vector3.new(h, h, h))
+    end
+    local center = (mn + mx) / 2
+    local radius = math.max(2, (mx - mn).Magnitude / 2)
+    local dist, ang, paused = radius * 1.9 + 4, 0.6, false
+    PreviewConn = RunService.RenderStepped:Connect(function(dt)
+        if not paused then ang += dt * 0.6 end
+        cam.CFrame = CFrame.lookAt(center + Vector3.new(math.cos(ang) * dist, dist * 0.45, math.sin(ang) * dist), center)
+    end)
+    button("-", UDim2.new(0, 8, 1, -40), UDim2.fromOffset(60, 30), function() dist = math.min(dist * 1.2, radius * 8 + 20) end)
+    button("+", UDim2.new(0, 76, 1, -40), UDim2.fromOffset(60, 30), function() dist = math.max(dist / 1.2, 3) end)
+    button("Pause", UDim2.new(1, -88, 1, -40), UDim2.fromOffset(80, 30), function() paused = not paused end)
+    if step > 1 then label("sampled", UDim2.new(0, 144, 1, -40), UDim2.fromOffset(100, 30)) end
 end
 
 ---------------------------------------------------------------- BUILD ENGINE
@@ -522,6 +795,7 @@ local bpDropdown = TabBuild:Dropdown({ Title = "Blueprint", Values = listNames(B
     Callback = function(v) S.blueprint = v end })
 local function refreshBP()
     pcall(function() bpDropdown:Refresh(listNames(BP_DIR)) end)
+    if Hub.refreshMine then Hub.refreshMine() end
 end
 TabBuild:Button({ Title = "Refresh list", Icon = "refresh-cw", Callback = refreshBP })
 TabBuild:Paragraph({ Title = "Folder", Desc = "workspace/" .. BP_DIR })
@@ -544,6 +818,88 @@ TabBuild:Button({ Title = "Build selected blueprint", Icon = "hammer", Callback 
 end })
 TabBuild:Button({ Title = "Stop", Icon = "square", Callback = function() Build.running = false end })
 TabBuild:Button({ Title = "Inspect building tool", Icon = "search", Callback = inspectTool })
+TabBuild:Button({ Title = "Preview selected blueprint", Icon = "eye", Callback = function()
+    if not S.blueprint then notify("Preview", "Select a blueprint first.", 3, "alert-circle") return end
+    local blocks, err = loadBlueprint(S.blueprint)
+    if not blocks then notify("Preview", err, 4, "x") return end
+    showPreview(blocks, S.blueprint)
+end })
+
+TabBuild:Section({ Title = "Slots (unlimited, free)" })
+TabBuild:Paragraph({
+    Title = "Your own slots",
+    Desc  = "Every blueprint saved here is a slot. There is no limit and nothing to buy. Save your current boat, rename, duplicate or delete slots.",
+})
+TabBuild:Input({ Title = "Boat path (optional)", Placeholder = "workspace.Blocks.YourName", Callback = function(v) S.boatPath = v or "" end })
+TabBuild:Input({ Title = "Slot name", Placeholder = "my_boat", Callback = function(v) S.slotName = v or "" end })
+TabBuild:Button({ Title = "Save my current boat to slot", Icon = "save", Callback = function()
+    local boat = findBoat()
+    if not boat then
+        notify("Slots", "Boat not found. Use 'Inspect boat' and set the Boat path.", 6, "x") return
+    end
+    local blocks = collectBoat(boat)
+    if not blocks then notify("Slots", "Your boat is empty.", 3, "x") return end
+    local name = S.slotName ~= "" and S.slotName or ("boat_" .. os.date("%m%d_%H%M"))
+    local ok, res = saveBlueprint(name, blocks)
+    if not ok then notify("Slots", tostring(res), 4, "x") return end
+    refreshBP()
+    notify("Slots", ("Saved %d blocks in '%s'"):format(#blocks, res), 4, "check")
+end })
+TabBuild:Button({ Title = "Inspect boat (print to console)", Icon = "terminal", Callback = function()
+    local boat = findBoat()
+    print("[R4NS0M] Boat container:", boat and boat:GetFullName() or "NOT FOUND")
+    for _, root in ipairs({ workspace, workspace:FindFirstChild("Blocks") }) do
+        if root then
+            print("[R4NS0M] children of", root:GetFullName())
+            for _, c in ipairs(root:GetChildren()) do print("   ", c.ClassName, c.Name) end
+        end
+    end
+    notify("Slots", boat and ("Found: " .. boat.Name) or "Not found, see console (F9).", 5, "terminal")
+end })
+TabBuild:Input({ Title = "New name", Placeholder = "new_name", Callback = function(v) S.slotNew = v or "" end })
+TabBuild:Button({ Title = "Rename selected slot", Icon = "pencil", Callback = function()
+    if not S.blueprint or not fsOk then notify("Slots", "Select a slot.", 3, "alert-circle") return end
+    local nn = safeName(S.slotNew)
+    if nn == "" then notify("Slots", "Type a new name.", 3, "alert-circle") return end
+    local ok, raw = pcall(readfile, BP_DIR .. "/" .. S.blueprint .. ".json")
+    if not ok then notify("Slots", "Slot not found.", 3, "x") return end
+    writefile(BP_DIR .. "/" .. nn .. ".json", raw)
+    if delfile then pcall(delfile, BP_DIR .. "/" .. S.blueprint .. ".json") end
+    S.blueprint = nn
+    refreshBP()
+    notify("Slots", "Renamed to " .. nn, 3, "check")
+end })
+TabBuild:Button({ Title = "Duplicate selected slot", Icon = "copy", Callback = function()
+    if not S.blueprint or not fsOk then notify("Slots", "Select a slot.", 3, "alert-circle") return end
+    local ok, raw = pcall(readfile, BP_DIR .. "/" .. S.blueprint .. ".json")
+    if not ok then return end
+    writefile(BP_DIR .. "/" .. S.blueprint .. "_copy.json", raw)
+    refreshBP()
+    notify("Slots", "Duplicated.", 3, "check")
+end })
+TabBuild:Button({ Title = "Delete selected slot", Icon = "trash-2", Callback = function()
+    if not S.blueprint or not fsOk or not delfile then notify("Slots", "Select a slot.", 3, "alert-circle") return end
+    pcall(delfile, BP_DIR .. "/" .. S.blueprint .. ".json")
+    S.blueprint = nil
+    refreshBP()
+    notify("Slots", "Deleted.", 3, "trash-2")
+end })
+
+TabBuild:Section({ Title = "Game slots" })
+TabBuild:Toggle({ Title = "Unlock game save slots (client side)", Value = false, Callback = function(v) S.slotsUnlock = v end })
+TabBuild:Paragraph({
+    Title = "Heads up",
+    Desc  = "This makes the game's gamepass check answer yes on your side. If the server enforces the slot limit it may still refuse; your hub slots above never have a limit.",
+})
+if hookmetamethod and getnamecallmethod and checkcaller then
+    local old
+    old = hookmetamethod(game, "__namecall", (newcclosure or function(f) return f end)(function(self, ...)
+        if S.slotsUnlock and self == MarketplaceService and getnamecallmethod() == "UserOwnsGamePassAsync" and not checkcaller() then
+            return true
+        end
+        return old(self, ...)
+    end))
+end
 
 task.spawn(function()
     while task.wait(0.5) do
@@ -684,35 +1040,206 @@ TabImage:Button({ Title = "Save as blueprint", Icon = "save", Callback = functio
 end })
 TabImage:Button({ Title = "Stop", Icon = "square", Callback = function() Build.running = false end })
 
----------------------------------------------------------------- COMMUNITY
-TabCommunity:Section({ Title = "Share blueprints" })
-local impName, impUrl = "", ""
-TabCommunity:Input({ Title = "Blueprint URL (raw JSON)", Placeholder = "https://...", Callback = function(v) impUrl = v end })
-TabCommunity:Input({ Title = "Save as", Placeholder = "my_boat", Callback = function(v) impName = v end })
-TabCommunity:Button({ Title = "Import blueprint", Icon = "download", Callback = function()
-    if not fsOk then notify("Community", "File system not available.", 3, "x") return end
-    if not impUrl:match("^https?://") or impName == "" then
-        notify("Community", "Fill the URL and a name.", 3, "alert-circle") return
+---------------------------------------------------------------- COMMUNITY (catalogo en la nube)
+local httpReq = (syn and syn.request) or (http and http.request) or http_request or request or (fluxus and fluxus.request)
+
+local function cloudReady()
+    return httpReq ~= nil and not CLOUD_URL:find("TU_PROYECTO", 1, true)
+end
+
+-- devuelve ok, data|error
+local function cloud(method, path, body)
+    if not cloudReady() then return false, "Cloud not configured (set CLOUD_URL at the top of the script)" end
+    local ok, res = pcall(httpReq, {
+        Url = CLOUD_URL .. path, Method = method,
+        Headers = { ["Content-Type"] = "application/json" },
+        Body = body ~= nil and HttpService:JSONEncode(body) or nil,
+    })
+    if not ok or not res then return false, "Request failed" end
+    local code = res.StatusCode or 0
+    if code < 200 or code >= 300 then return false, ("HTTP %d"):format(code) end
+    local decoded
+    if res.Body and res.Body ~= "" then
+        local ok2, d = pcall(HttpService.JSONDecode, HttpService, res.Body)
+        if ok2 then decoded = d end
     end
-    local ok, raw = pcall(game.HttpGet, game, impUrl)
-    local valid = ok and pcall(function()
-        local d = HttpService:JSONDecode(raw)
-        assert(type(d.blocks) == "table")
-    end)
-    if not valid then notify("Community", "That URL isn't a valid blueprint.", 4, "x") return end
-    writefile(BP_DIR .. "/" .. impName:gsub("[^%w_%-]", "_") .. ".json", raw)
-    refreshBP()
-    notify("Community", "Imported: " .. impName, 4, "check")
-end })
-TabCommunity:Button({ Title = "Copy selected blueprint (share)", Icon = "share-2", Callback = function()
-    if not S.blueprint or not fsOk then notify("Community", "Select a blueprint in Auto build.", 3, "alert-circle") return end
-    if setclipboard then setclipboard(readfile(BP_DIR .. "/" .. S.blueprint .. ".json")) end
-    notify("Community", "Blueprint JSON copied.", 3, "check")
-end })
+    return true, decoded
+end
+
+local Cat = { map = {}, sel = nil, lastUp = 0 }
+
+TabCommunity:Section({ Title = "Catalog" })
 TabCommunity:Paragraph({
-    Title = "Tip",
-    Desc  = "Paste the copied JSON into a raw paste/gist and share the link so others can import it.",
+    Title = "Community builds",
+    Desc  = cloudReady() and "Connected. Browse, preview and download builds from other players."
+        or "Cloud not configured yet. Set CLOUD_URL at the top of the script (Firebase Realtime Database).",
 })
+TabCommunity:Input({ Title = "Search", Placeholder = "name, author or words", Callback = function(v) S.catSearch = v or "" end })
+TabCommunity:Dropdown({ Title = "Show", Values = { "All", "Mine" }, Value = "All", Callback = function(v) S.catBrowse = v end })
+TabCommunity:Dropdown({ Title = "Sort by", Values = { "Newest", "Popular" }, Value = "Newest", Callback = function(v) S.catSort = v end })
+
+local catInfo
+local catDropdown = TabCommunity:Dropdown({
+    Title = "Results", Values = { "(press Search)" }, Value = nil,
+    Callback = function(label)
+        Cat.sel = Cat.map[label]
+        local m = Cat.sel
+        if m and catInfo then
+            pcall(function()
+                catInfo:SetDesc(("%s\nBy %s\n%d blocks  -  %d downloads\n%s")
+                    :format(m.name, m.author or "?", m.blocks or 0, m.downloads or 0,
+                        (m.desc and m.desc ~= "") and m.desc or "No description"))
+            end)
+        end
+    end,
+})
+catInfo = TabCommunity:Paragraph({ Title = "Selected build", Desc = "Nothing selected." })
+
+local function refreshCatalog()
+    local q = "/catalog.json?orderBy=" .. HttpService:UrlEncode('"$key"') .. "&limitToLast=150"
+    local ok, data = cloud("GET", q)
+    if not ok then notify("Catalog", tostring(data), 5, "x") return end
+    data = type(data) == "table" and data or {}
+    local filter = (S.catSearch or ""):lower()
+    local list = {}
+    for id, m in pairs(data) do
+        if type(m) == "table" and type(m.name) == "string" then
+            local mine = m.authorId == LP.UserId
+            local visible = (tonumber(m.reports) or 0) < HIDE_AT_REPORTS or mine
+            local pass = (S.catBrowse ~= "Mine" or mine)
+                and (filter == "" or (m.name .. " " .. tostring(m.author or "") .. " " .. tostring(m.desc or "")):lower():find(filter, 1, true))
+            if visible and pass then m.id = id list[#list + 1] = m end
+        end
+    end
+    if S.catSort == "Popular" then
+        table.sort(list, function(x, y) return (tonumber(x.downloads) or 0) > (tonumber(y.downloads) or 0) end)
+    else
+        table.sort(list, function(x, y) return x.id > y.id end)
+    end
+    Cat.map, Cat.sel = {}, nil
+    local labels = {}
+    for _, m in ipairs(list) do
+        local label = ("%s  |  %s  |  %d blocks"):format(m.name:sub(1, 28), tostring(m.author or "?"):sub(1, 14), tonumber(m.blocks) or 0)
+        local base, n = label, 1
+        while Cat.map[label] do n += 1 label = base .. " #" .. n end
+        Cat.map[label] = m
+        labels[#labels + 1] = label
+    end
+    if #labels == 0 then labels = { "(no results)" } end
+    pcall(function() catDropdown:Refresh(labels) end)
+    notify("Catalog", ("%d builds"):format(#list), 3, "search")
+end
+TabCommunity:Button({ Title = "Search / refresh", Icon = "search", Callback = refreshCatalog })
+
+local function fetchBlocks(id)
+    local ok, data = cloud("GET", "/blueprints/" .. id .. ".json")
+    if not ok then return nil, data end
+    if type(data) ~= "string" then return nil, "Build data is empty" end
+    local ok2, d = pcall(HttpService.JSONDecode, HttpService, data)
+    local clean = ok2 and cleanBlocks(d)
+    if not clean or #clean == 0 then return nil, "Corrupt build data" end
+    return clean
+end
+
+local function needSel()
+    if not Cat.sel then notify("Catalog", "Select a build first.", 3, "alert-circle") return false end
+    return true
+end
+
+TabCommunity:Button({ Title = "Preview", Icon = "eye", Callback = function()
+    if not needSel() then return end
+    local blocks, err = fetchBlocks(Cat.sel.id)
+    if not blocks then notify("Catalog", tostring(err), 4, "x") return end
+    showPreview(blocks, Cat.sel.name)
+end })
+TabCommunity:Button({ Title = "Download to my slots", Icon = "download", Callback = function()
+    if not needSel() then return end
+    local m = Cat.sel
+    local blocks, err = fetchBlocks(m.id)
+    if not blocks then notify("Catalog", tostring(err), 4, "x") return end
+    local ok, res = saveBlueprint(safeName(m.name) .. "_" .. m.id:sub(-4), blocks)
+    if not ok then notify("Catalog", tostring(res), 4, "x") return end
+    cloud("PATCH", "/catalog/" .. m.id .. ".json", { downloads = (tonumber(m.downloads) or 0) + 1 })
+    m.downloads = (tonumber(m.downloads) or 0) + 1
+    refreshBP()
+    notify("Catalog", "Saved as " .. res, 4, "check")
+end })
+
+TabCommunity:Section({ Title = "Report" })
+TabCommunity:Dropdown({ Title = "Reason", Values = { "Inappropriate content", "Offensive name or text", "Spam / duplicate", "Stolen work", "Other" },
+    Value = "Inappropriate content", Callback = function(v) S.repReason = v end })
+TabCommunity:Button({ Title = "Report selected build", Icon = "flag", Callback = function()
+    if not needSel() then return end
+    local m = Cat.sel
+    local ok, err = cloud("PUT", ("/reports/%s/%d.json"):format(m.id, LP.UserId), { reason = S.repReason, ts = os.time() })
+    if not ok then notify("Report", tostring(err), 4, "x") return end
+    -- una persona = un reporte; se cuenta cuantas hay y se guarda en la obra
+    local ok2, keys = cloud("GET", ("/reports/%s.json?shallow=true"):format(m.id))
+    if ok2 and type(keys) == "table" then
+        local n = 0 for _ in pairs(keys) do n += 1 end
+        cloud("PATCH", "/catalog/" .. m.id .. ".json", { reports = n })
+    end
+    notify("Report", "Thanks, the build was reported.", 4, "flag")
+end })
+
+TabCommunity:Section({ Title = "Upload" })
+local upDropdown = TabCommunity:Dropdown({ Title = "My saved builds", Values = listNames(BP_DIR), Value = nil,
+    Callback = function(v) S.upBP = v end })
+Hub.refreshMine = function()
+    pcall(function() upDropdown:Refresh(listNames(BP_DIR)) end)
+end
+TabCommunity:Input({ Title = "Title", Placeholder = "My cool boat", Callback = function(v) S.upTitle = v or "" end })
+TabCommunity:Input({ Title = "Description", Placeholder = "optional", Callback = function(v) S.upDesc = v or "" end })
+TabCommunity:Button({ Title = "Publish to the cloud", Icon = "upload", Callback = function()
+    if not S.upBP then notify("Upload", "Select one of your saved builds.", 3, "alert-circle") return end
+    local title = S.upTitle:gsub("^%s+", ""):gsub("%s+$", "")
+    if #title < 3 then notify("Upload", "Write a title (3+ characters).", 3, "alert-circle") return end
+    if os.clock() - Cat.lastUp < 30 then notify("Upload", "Wait a few seconds between uploads.", 3, "clock") return end
+    local blocks, err = loadBlueprint(S.upBP)
+    if not blocks then notify("Upload", tostring(err), 4, "x") return end
+    if #blocks > 6000 then notify("Upload", "Too many blocks (max 6000).", 4, "x") return end
+    local compact = {}
+    for i, b in ipairs(blocks) do
+        compact[i] = { n = b.n, p = { r2(b.p[1]), r2(b.p[2]), r2(b.p[3]) }, r = { r2(b.r[1]), r2(b.r[2]), r2(b.r[3]) },
+            c = b.c, s = b.s and { r2(b.s[1]), r2(b.s[2]), r2(b.s[3]) } or nil }
+    end
+    local id = ("%011d_%s"):format(os.time(), HttpService:GenerateGUID(false):sub(1, 4))
+    local ok, e1 = cloud("PUT", "/blueprints/" .. id .. ".json", HttpService:JSONEncode(compact))
+    if not ok then notify("Upload", tostring(e1), 5, "x") return end
+    local ok2, e2 = cloud("PUT", "/catalog/" .. id .. ".json", {
+        name = title:sub(1, 40), desc = S.upDesc:sub(1, 200), author = LP.DisplayName, authorId = LP.UserId,
+        blocks = #blocks, ts = os.time(), downloads = 0, reports = 0,
+    })
+    if not ok2 then notify("Upload", tostring(e2), 5, "x") return end
+    Cat.lastUp = os.clock()
+    notify("Upload", "Published: " .. title, 4, "check")
+end })
+
+TabCommunity:Section({ Title = "My uploads" })
+TabCommunity:Paragraph({ Title = "How", Desc = "Set 'Show: Mine', press Search, select one of your builds and use the buttons below." })
+TabCommunity:Input({ Title = "New title", Placeholder = "new title", Callback = function(v) S.upRename = v or "" end })
+local function isMine()
+    if not needSel() then return false end
+    if Cat.sel.authorId ~= LP.UserId then notify("Catalog", "That build isn't yours.", 3, "x") return false end
+    return true
+end
+TabCommunity:Button({ Title = "Rename selected upload", Icon = "pencil", Callback = function()
+    if not isMine() then return end
+    local t = S.upRename:gsub("^%s+", ""):gsub("%s+$", "")
+    if #t < 3 then notify("Catalog", "Write a title (3+ characters).", 3, "alert-circle") return end
+    local ok, err = cloud("PATCH", "/catalog/" .. Cat.sel.id .. ".json", { name = t:sub(1, 40) })
+    if not ok then notify("Catalog", tostring(err), 4, "x") return end
+    notify("Catalog", "Renamed. Press Search to refresh.", 4, "check")
+end })
+TabCommunity:Button({ Title = "Delete selected upload", Icon = "trash-2", Callback = function()
+    if not isMine() then return end
+    local id = Cat.sel.id
+    cloud("DELETE", "/catalog/" .. id .. ".json")
+    cloud("DELETE", "/blueprints/" .. id .. ".json")
+    cloud("DELETE", "/reports/" .. id .. ".json")
+    Cat.sel = nil
+    notify("Catalog", "Deleted. Press Search to refresh.", 4, "trash-2")
+end })
 
 ---------------------------------------------------------------- KEYBINDS
 TabKeys:Section({ Title = "Hotkeys" })
@@ -776,8 +1303,10 @@ end
 TabConfigs:Section({ Title = "Hub" })
 function Hub.Unload()
     Hub.Dead = true
-    S.farm, Build.running = false, false
+    S.farm, Build.running, S.slotsUnlock = false, false, false
     setFly(false)
+    clearPlatforms()
+    destroyPreview()
     for _, c in ipairs(Hub.Conns) do pcall(function() c:Disconnect() end) end
     pcall(function() Window:Destroy() end)
 end

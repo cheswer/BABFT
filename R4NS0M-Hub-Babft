@@ -27,6 +27,7 @@ local TeleportSvc  = game:GetService("TeleportService")
 local VirtualUser  = game:GetService("VirtualUser")
 local AssetService = game:GetService("AssetService")
 local MarketplaceService = game:GetService("MarketplaceService")
+local GuiService = game:GetService("GuiService")
 
 local LP = Players.LocalPlayer
 local Hub = { Conns = {}, Version = VERSION }
@@ -130,6 +131,12 @@ local S = {
     -- farm
     farm = false, stageDelay = 2.1, runLimit = 0, respawnWait = 25,
     platforms = true, platSize = 14,
+    -- extras
+    fovOn = false, fov = 70, zoom = false, gravOn = false, grav = 196, esp = false, autoRejoin = false,
+    -- device / touch keys
+    tkShow = false, tkLocked = false, tkOpacity = 0.25,
+    tkLabel = "", tkPreset = "E", tkCustom = "", tkMode = "Tap", tkSize = 60, tkAction = "Toggle fly",
+    tkNewLabel = "", tkNewKey = "", fpsCap = 0,
     -- slots / comunidad
     boatPath = "", slotName = "", slotNew = "", slotsUnlock = false,
     catSearch = "", catBrowse = "All", catSort = "Newest", repReason = "Inappropriate content",
@@ -165,6 +172,7 @@ local TabImage     = Window:Tab({ Title = "Image builder", Icon = "image" })
 local TabCommunity = Window:Tab({ Title = "Community",     Icon = "users" })
 local TabFarm      = Window:Tab({ Title = "Auto farm",     Icon = "coins" })
 local TabKeys      = Window:Tab({ Title = "Keybinds",      Icon = "keyboard" })
+local TabDevice    = Window:Tab({ Title = "Device",        Icon = "gamepad-2" })
 local TabConfigs   = Window:Tab({ Title = "Configs",       Icon = "save" })
 
 ---------------------------------------------------------------- MAIN
@@ -345,6 +353,120 @@ end }))
 TabPlayer:Button({ Title = "Reset character", Icon = "skull", Callback = function()
     local h = hum() if h then h.Health = 0 end
 end })
+
+TabPlayer:Section({ Title = "Camera & world" })
+reg("pl_fov_on", TabPlayer:Toggle({ Title = "Custom FOV", Value = false, Callback = function(v)
+    S.fovOn = v
+    if not v then pcall(function() workspace.CurrentCamera.FieldOfView = 70 end) end
+end }))
+reg("pl_fov", TabPlayer:Slider({ Title = "FOV", Step = 1, Value = { Min = 40, Max = 120, Default = 70 },
+    Callback = function(v) S.fov = v end }))
+reg("pl_zoom", TabPlayer:Toggle({ Title = "Unlock camera zoom", Value = false, Callback = function(v)
+    S.zoom = v
+    pcall(function() LP.CameraMaxZoomDistance = v and 100000 or 128 end)
+end }))
+reg("pl_grav_on", TabPlayer:Toggle({ Title = "Custom gravity", Value = false, Callback = function(v)
+    S.gravOn = v
+    if not v then workspace.Gravity = 196.2 end
+end }))
+reg("pl_grav", TabPlayer:Slider({ Title = "Gravity", Step = 1, Value = { Min = 20, Max = 400, Default = 196 },
+    Callback = function(v) S.grav = v end }))
+track(RunService.Heartbeat:Connect(function()
+    if S.fovOn then pcall(function() workspace.CurrentCamera.FieldOfView = S.fov end) end
+    if S.gravOn then workspace.Gravity = S.grav end
+end))
+
+TabPlayer:Section({ Title = "Other players" })
+local function clearEsp()
+    for _, pl in ipairs(Players:GetPlayers()) do
+        local c = pl.Character
+        local h = c and c:FindFirstChild("R4N_ESP")
+        if h then h:Destroy() end
+    end
+end
+reg("pl_esp", TabPlayer:Toggle({ Title = "Player ESP", Value = false, Callback = function(v)
+    S.esp = v
+    if not v then clearEsp() end
+end }))
+task.spawn(function()
+    while task.wait(1.5) do
+        if Hub.Dead then break end
+        if S.esp then
+            for _, pl in ipairs(Players:GetPlayers()) do
+                local c = pl.Character
+                if pl ~= LP and c and not c:FindFirstChild("R4N_ESP") then
+                    local h = Instance.new("Highlight")
+                    h.Name = "R4N_ESP" h.Adornee = c
+                    h.FillColor = pl.TeamColor.Color h.FillTransparency = 0.6
+                    h.OutlineColor = Color3.new(1, 1, 1)
+                    h.Parent = c
+                end
+            end
+        end
+    end
+end)
+
+local function playerNames()
+    local t = {}
+    for _, pl in ipairs(Players:GetPlayers()) do if pl ~= LP then t[#t + 1] = pl.Name end end
+    table.sort(t)
+    return t
+end
+local selPlayer
+local plDropdown = TabPlayer:Dropdown({ Title = "Player", Values = playerNames(), Value = nil, Callback = function(v) selPlayer = v end })
+TabPlayer:Button({ Title = "Refresh player list", Icon = "refresh-cw", Callback = function()
+    pcall(function() plDropdown:Refresh(playerNames()) end)
+end })
+TabPlayer:Button({ Title = "Teleport to player", Icon = "map-pin", Callback = function()
+    local pl = selPlayer and Players:FindFirstChild(selPlayer)
+    local r = pl and pl.Character and pl.Character:FindFirstChild("HumanoidRootPart")
+    if r then tpTo(r.CFrame + Vector3.new(0, 4, 0)) else notify("Player", "Select a player in the game.", 3, "x") end
+end })
+TabPlayer:Toggle({ Title = "Spectate player", Value = false, Callback = function(v)
+    local cam = workspace.CurrentCamera
+    if v then
+        local pl = selPlayer and Players:FindFirstChild(selPlayer)
+        local h = pl and pl.Character and pl.Character:FindFirstChildOfClass("Humanoid")
+        if h then cam.CameraSubject = h else notify("Player", "Select a player first.", 3, "x") end
+    else
+        local h = hum() if h then cam.CameraSubject = h end
+    end
+end })
+
+local tapArmed = false
+TabPlayer:Button({ Title = "Tap-teleport (arm, then tap the world)", Icon = "mouse-pointer-click", Callback = function()
+    tapArmed = true
+    notify("Tap-teleport", "Tap anywhere in the world.", 4, "mouse-pointer-click")
+end })
+track(UIS.InputBegan:Connect(function(input, gp)
+    if tapArmed and not gp and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1) then
+        tapArmed = false
+        local cam = workspace.CurrentCamera
+        local ray = cam:ScreenPointToRay(input.Position.X, input.Position.Y)
+        local params = RaycastParams.new()
+        params.FilterType = Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances = { char() }
+        local res = workspace:Raycast(ray.Origin, ray.Direction * 3000, params)
+        if res then tpTo(CFrame.new(res.Position + Vector3.new(0, 4, 0))) end
+    end
+end))
+
+TabMain:Section({ Title = "Connection" })
+reg("main_autorejoin", TabMain:Toggle({ Title = "Auto rejoin on disconnect", Value = false, Callback = function(v) S.autoRejoin = v end }))
+task.spawn(function()
+    local ok, overlay = pcall(function()
+        local cg = game:GetService("CoreGui")
+        return cg:WaitForChild("RobloxPromptGui", 10):WaitForChild("promptOverlay", 10)
+    end)
+    if ok and overlay then
+        track(overlay.ChildAdded:Connect(function(c)
+            if S.autoRejoin and c.Name == "ErrorPrompt" then
+                task.wait(2)
+                TeleportSvc:Teleport(game.PlaceId, LP)
+            end
+        end))
+    end
+end)
 
 track(UIS.JumpRequest:Connect(function()
     if S.infJump then
@@ -1258,6 +1380,406 @@ reg("kb_farm", TabKeys:Keybind({ Title = "Toggle auto farm", Value = "G", Callba
 end }))
 reg("kb_stop", TabKeys:Keybind({ Title = "Stop building", Value = "K", Callback = function() Build.running = false end }))
 
+---------------------------------------------------------------- DEVICE SPOOF
+local Device = { mode = "Off", platform = true }
+local DevProfiles = {
+    PC = { TouchEnabled = false, KeyboardEnabled = true, MouseEnabled = true, GamepadEnabled = false,
+           lastInput = Enum.UserInputType.Keyboard, platform = Enum.Platform.Windows },
+    Mobile = { TouchEnabled = true, KeyboardEnabled = false, MouseEnabled = false, GamepadEnabled = false,
+           lastInput = Enum.UserInputType.Touch, platform = Enum.Platform.Android },
+    Console = { TouchEnabled = false, KeyboardEnabled = false, MouseEnabled = false, GamepadEnabled = true,
+           lastInput = Enum.UserInputType.Gamepad1, platform = Enum.Platform.XBoxOne },
+}
+local hooksInstalled = false
+local function installHooks()
+    if hooksInstalled then return true end
+    if not (hookmetamethod and checkcaller and getnamecallmethod) then return false end
+    hooksInstalled = true
+    local wrap = newcclosure or function(f) return f end
+    local oldIdx
+    oldIdx = hookmetamethod(game, "__index", wrap(function(self, key)
+        if Device.mode ~= "Off" and self == UIS and not checkcaller() then
+            local v = DevProfiles[Device.mode][key]
+            if v ~= nil and type(v) == "boolean" then return v end
+        end
+        return oldIdx(self, key)
+    end))
+    local oldNC
+    oldNC = hookmetamethod(game, "__namecall", wrap(function(self, ...)
+        if Device.mode ~= "Off" and not checkcaller() then
+            local m = getnamecallmethod()
+            local prof = DevProfiles[Device.mode]
+            if self == UIS then
+                if m == "GetLastInputType" then return prof.lastInput end
+                if m == "GetPlatform" and Device.platform then return prof.platform end
+                if m == "GetGamepadConnected" or m == "GamepadSupports" then return Device.mode == "Console" end
+            elseif self == GuiService and m == "IsTenFootInterface" and Device.platform then
+                return Device.mode == "Console"
+            end
+        end
+        return oldNC(self, ...)
+    end))
+    return true
+end
+
+local function pulseInput()
+    local prof = DevProfiles[Device.mode]
+    if prof and firesignal then
+        pcall(function() firesignal(UIS.LastInputTypeChanged, prof.lastInput) end)
+    end
+end
+
+TabDevice:Section({ Title = "Device spoof" })
+TabDevice:Paragraph({
+    Title = "What it does",
+    Desc  = "Makes the game believe you play on PC, mobile or console, so it enables the controls and hotkeys of that device. Some games only read this at load; if something doesn't change, press 'Refresh' or rejoin.\nTip: on PC mode a phone loses the touch jump button. Create a Space button below.",
+})
+reg("dv_mode", TabDevice:Dropdown({ Title = "Pretend I'm on", Values = { "Off", "PC", "Mobile", "Console" }, Value = "Off", Callback = function(v)
+    if v ~= "Off" and not installHooks() then
+        notify("Device", "Your executor can't hook metamethods.", 5, "x")
+        Device.mode = "Off"
+        return
+    end
+    Device.mode = v
+    task.delay(0.2, pulseInput)
+    notify("Device", v == "Off" and "Spoof off." or ("Now pretending: " .. v), 3, "monitor")
+end }))
+reg("dv_platform", TabDevice:Toggle({ Title = "Also fake platform / console UI", Value = true, Callback = function(v) Device.platform = v end }))
+TabDevice:Button({ Title = "Refresh game input detection", Icon = "refresh-cw", Callback = function()
+    pulseInput()
+    notify("Device", "Input type signal sent.", 3, "check")
+end })
+
+-- ------------------------------------------------ botones flotantes
+local VIM
+pcall(function() VIM = game:GetService("VirtualInputManager") end)
+local GOLD, NAVY, CREAM, RED = Color3.fromHex("#F5B83D"), Color3.fromHex("#0E2238"), Color3.fromHex("#FFF4D6"), Color3.fromHex("#E5484D")
+
+local keyAlias = {
+    shift = "LeftShift", lshift = "LeftShift", rshift = "RightShift", ctrl = "LeftControl", control = "LeftControl",
+    alt = "LeftAlt", space = "Space", jump = "Space", enter = "Return", esc = "Escape", tab = "Tab", backspace = "Backspace",
+    ["0"] = "Zero", ["1"] = "One", ["2"] = "Two", ["3"] = "Three", ["4"] = "Four", ["5"] = "Five",
+    ["6"] = "Six", ["7"] = "Seven", ["8"] = "Eight", ["9"] = "Nine",
+    up = "Up", down = "Down", left = "Left", right = "Right",
+}
+local function parseKey(str)
+    local l = tostring(str or ""):gsub("%s", ""):lower()
+    if l == "" then return nil end
+    if l == "mouse1" or l == "click" or l == "lmb" then return "M1" end
+    if l == "mouse2" or l == "rmb" then return "M2" end
+    local a = keyAlias[l]
+    if a then return Enum.KeyCode[a] end
+    for _, kc in ipairs(Enum.KeyCode:GetEnumItems()) do
+        if kc.Name:lower() == l then return kc end
+    end
+end
+
+local function sendKey(k, down)
+    if not VIM or not k then return end
+    pcall(function()
+        if k == "M1" or k == "M2" then
+            local pos = UIS:GetMouseLocation()
+            VIM:SendMouseButtonEvent(pos.X, pos.Y, k == "M1" and 0 or 1, down, game, 0)
+        else
+            VIM:SendKeyEvent(down, k, false, game)
+        end
+    end)
+end
+
+local function toggleFly()
+    if flyToggle and flyToggle.Set then flyToggle:Set(not S.fly) else setFly(not S.fly) end
+end
+local function toggleFarm()
+    if farmToggle and farmToggle.Set then farmToggle:Set(not S.farm) else setFarm(not S.farm) end
+end
+local ACTIONS = {
+    ["Toggle fly"] = toggleFly,
+    ["Toggle noclip"] = function() S.noclip = not S.noclip notify("Noclip", S.noclip and "On" or "Off", 2, "ghost") end,
+    ["Toggle auto farm"] = toggleFarm,
+    ["Stop building"] = function() Build.running = false end,
+    ["Teleport to chest"] = function()
+        local t = chestTrigger()
+        if t then tpTo(t.CFrame + Vector3.new(0, 3, 0)) end
+    end,
+    ["Toggle hub UI"] = function()
+        if not pcall(function() Window:Toggle() end) then pcall(function() Window:Open() end) end
+    end,
+}
+local actionNames = {}
+for k in pairs(ACTIONS) do actionNames[#actionNames + 1] = k end
+table.sort(actionNames)
+
+local TK = { defs = {}, objs = {}, nextId = 1, sel = nil, map = {} }
+local TK_FILE = FOLDER .. "/touchkeys.json"
+local tkDropdown
+
+local function tkSave()
+    if not fsOk then return end
+    local out = {}
+    for _, d in ipairs(TK.defs) do
+        out[#out + 1] = { id = d.id, label = d.label, key = d.key, action = d.action, mode = d.mode,
+            size = d.size, x = d.x, y = d.y }
+    end
+    pcall(writefile, TK_FILE, HttpService:JSONEncode({ buttons = out, nextId = TK.nextId }))
+end
+
+local function tkGui()
+    if TK.gui and TK.gui.Parent then return TK.gui end
+    local g = Instance.new("ScreenGui")
+    g.Name = "R4N_TouchKeys" g.ResetOnSpawn = false g.IgnoreGuiInset = true g.DisplayOrder = 900
+    pcall(function() g.Parent = (gethui and gethui()) or game:GetService("CoreGui") end)
+    if not g.Parent then g.Parent = LP:WaitForChild("PlayerGui") end
+    TK.gui = g
+    return g
+end
+
+local function tkFire(def, down)
+    if def.action then
+        if down then local f = ACTIONS[def.action] if f then f() end end
+        return
+    end
+    sendKey(def.parsed, down)
+end
+
+local function tkClearObjs()
+    for id, o in pairs(TK.objs) do
+        pcall(function() o.conn:Disconnect() end)
+        pcall(function() o.b:Destroy() end)
+        TK.objs[id] = nil
+    end
+end
+
+local function tkStyle()
+    for _, o in pairs(TK.objs) do
+        o.stroke.Color = S.tkLocked and GOLD or RED
+        o.b.BackgroundTransparency = S.tkOpacity
+    end
+end
+
+local function tkMake(def)
+    local gui = tkGui()
+    local b = Instance.new("TextButton")
+    b.Name = "tk_" .. def.id
+    b.AnchorPoint = Vector2.new(0.5, 0.5)
+    b.Size = UDim2.fromOffset(def.size, def.size)
+    b.Position = UDim2.fromScale(def.x, def.y)
+    b.BackgroundColor3 = NAVY b.BackgroundTransparency = S.tkOpacity
+    b.AutoButtonColor = false
+    b.Text = def.label b.TextColor3 = CREAM b.Font = Enum.Font.GothamBold b.TextScaled = true
+    b.Parent = gui
+    local c = Instance.new("UICorner") c.CornerRadius = UDim.new(1, 0) c.Parent = b
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft = UDim.new(0, 10) pad.PaddingRight = UDim.new(0, 10) pad.PaddingTop = UDim.new(0, 10) pad.PaddingBottom = UDim.new(0, 10)
+    pad.Parent = b
+    local stroke = Instance.new("UIStroke") stroke.Thickness = 2 stroke.Color = S.tkLocked and GOLD or RED stroke.Parent = b
+
+    local dragging, dragObj, dragStart, startPos = false, nil, nil, nil
+    local obj = { b = b, stroke = stroke }
+    obj.conn = UIS.InputChanged:Connect(function(input)
+        if dragging and dragObj and (input == dragObj
+            or (dragObj.UserInputType == Enum.UserInputType.MouseButton1 and input.UserInputType == Enum.UserInputType.MouseMovement)) then
+            local d = input.Position - dragStart
+            b.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+    b.InputBegan:Connect(function(input)
+        local t = input.UserInputType
+        if t ~= Enum.UserInputType.Touch and t ~= Enum.UserInputType.MouseButton1 then return end
+        if S.tkLocked then
+            if def.mode == "Toggle" then
+                def.on = not def.on
+                tkFire(def, def.on)
+                b.BackgroundColor3 = def.on and GOLD or NAVY
+            elseif def.mode == "Hold" then
+                tkFire(def, true) b.BackgroundColor3 = GOLD
+                local cc
+                cc = input.Changed:Connect(function()
+                    if input.UserInputState == Enum.UserInputState.End then
+                        cc:Disconnect() tkFire(def, false) b.BackgroundColor3 = NAVY
+                    end
+                end)
+            else
+                tkFire(def, true) b.BackgroundColor3 = GOLD
+                task.delay(0.06, function() tkFire(def, false) b.BackgroundColor3 = NAVY end)
+            end
+        else
+            dragging, dragObj, dragStart, startPos = true, input, input.Position, b.Position
+            local cc
+            cc = input.Changed:Connect(function()
+                if input.UserInputState == Enum.UserInputState.End then
+                    cc:Disconnect() dragging = false
+                    local vs = gui.AbsoluteSize
+                    local ap = b.AbsolutePosition + b.AbsoluteSize / 2
+                    def.x = math.clamp(ap.X / vs.X, 0.02, 0.98)
+                    def.y = math.clamp(ap.Y / vs.Y, 0.02, 0.98)
+                    tkSave()
+                end
+            end)
+        end
+    end)
+    TK.objs[def.id] = obj
+end
+
+local function tkRender()
+    tkClearObjs()
+    if not S.tkShow then return end
+    for _, d in ipairs(TK.defs) do tkMake(d) end
+end
+
+local function tkLabels()
+    local labels = {}
+    TK.map = {}
+    for _, d in ipairs(TK.defs) do
+        local l = ("%s  (%s)  #%d"):format(d.label, d.action or d.key, d.id)
+        TK.map[l] = d.id
+        labels[#labels + 1] = l
+    end
+    if #labels == 0 then labels = { "(no buttons yet)" } end
+    return labels
+end
+local function tkRefreshList()
+    pcall(function() tkDropdown:Refresh(tkLabels()) end)
+end
+local function tkSelDef()
+    for _, d in ipairs(TK.defs) do if d.id == TK.sel then return d end end
+end
+
+local function tkAdd(def)
+    def.id = TK.nextId TK.nextId += 1
+    local n = #TK.defs
+    def.x = 0.5 + ((n % 5) - 2) * 0.09
+    def.y = 0.45 + math.floor(n / 5) * 0.12
+    def.parsed = def.key and parseKey(def.key) or nil
+    table.insert(TK.defs, def)
+    tkSave()
+    if S.tkShow then tkMake(def) end
+    tkRefreshList()
+end
+
+-- cargar layout guardado
+if fsOk then
+    local ok, raw = pcall(readfile, TK_FILE)
+    if ok then
+        local ok2, d = pcall(HttpService.JSONDecode, HttpService, raw)
+        if ok2 and type(d) == "table" and type(d.buttons) == "table" then
+            for _, b in ipairs(d.buttons) do
+                if type(b) == "table" and type(b.label) == "string" and (b.action or type(b.key) == "string") then
+                    table.insert(TK.defs, {
+                        id = tonumber(b.id) or (#TK.defs + 1), label = b.label:sub(1, 12), key = b.key,
+                        action = ACTIONS[b.action] and b.action or nil,
+                        mode = (b.mode == "Hold" or b.mode == "Toggle") and b.mode or "Tap",
+                        size = math.clamp(tonumber(b.size) or 60, 36, 120),
+                        x = math.clamp(tonumber(b.x) or 0.5, 0.02, 0.98), y = math.clamp(tonumber(b.y) or 0.5, 0.02, 0.98),
+                        parsed = b.key and parseKey(b.key) or nil,
+                    })
+                end
+            end
+            TK.nextId = tonumber(d.nextId) or (#TK.defs + 1)
+        end
+    end
+end
+
+TabDevice:Section({ Title = "Floating buttons" })
+TabDevice:Paragraph({
+    Title = "How to use",
+    Desc  = "1) Create a button.  2) Turn Lock OFF and drag it where you want (red outline).  3) Turn Lock ON (gold outline) to press it like a key.",
+})
+local tkShowToggle = reg("dv_show", TabDevice:Toggle({ Title = "Show floating buttons", Value = false, Callback = function(v)
+    S.tkShow = v tkRender()
+end }))
+reg("dv_lock", TabDevice:Toggle({ Title = "Lock buttons in place (ON = press, OFF = drag)", Value = false, Callback = function(v)
+    S.tkLocked = v tkStyle()
+end }))
+reg("dv_opacity", TabDevice:Slider({ Title = "Button transparency", Step = 0.05, Value = { Min = 0, Max = 0.9, Default = 0.25 },
+    Callback = function(v) S.tkOpacity = v tkStyle() end }))
+
+TabDevice:Section({ Title = "Create key button" })
+TabDevice:Input({ Title = "Button name", Placeholder = "E", Callback = function(v) S.tkLabel = v or "" end })
+TabDevice:Dropdown({ Title = "Key", Value = "E", Values = {
+    "E", "F", "Q", "R", "G", "X", "Z", "C", "V", "B", "T", "Y", "U", "H", "J", "K", "L",
+    "Space", "LeftShift", "LeftControl", "LeftAlt", "Tab",
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "Mouse1", "Mouse2",
+}, Callback = function(v) S.tkPreset = v end })
+TabDevice:Input({ Title = "Or custom key (overrides the list)", Placeholder = "e.g. F5, Backspace, Up", Callback = function(v) S.tkCustom = v or "" end })
+TabDevice:Dropdown({ Title = "Behavior", Values = { "Tap", "Hold", "Toggle" }, Value = "Tap", Callback = function(v) S.tkMode = v end })
+TabDevice:Slider({ Title = "Size", Step = 2, Value = { Min = 36, Max = 120, Default = 60 }, Callback = function(v) S.tkSize = v end })
+TabDevice:Button({ Title = "Create key button", Icon = "plus", Callback = function()
+    local key = (S.tkCustom ~= "" and S.tkCustom) or S.tkPreset
+    if not parseKey(key) then notify("Buttons", "Unknown key: " .. tostring(key), 4, "x") return end
+    local label = S.tkLabel ~= "" and S.tkLabel:sub(1, 12) or key:sub(1, 6)
+    tkAdd({ label = label, key = key, mode = S.tkMode, size = S.tkSize })
+    if not S.tkShow then pcall(function() tkShowToggle:Set(true) end) if not S.tkShow then S.tkShow = true tkRender() end end
+    notify("Buttons", "Created '" .. label .. "'. Drag it with Lock OFF.", 4, "check")
+end })
+
+TabDevice:Section({ Title = "Create hub action button" })
+TabDevice:Dropdown({ Title = "Action", Values = actionNames, Value = "Toggle fly", Callback = function(v) S.tkAction = v end })
+TabDevice:Button({ Title = "Create action button", Icon = "plus-circle", Callback = function()
+    tkAdd({ label = S.tkLabel ~= "" and S.tkLabel:sub(1, 12) or S.tkAction:gsub("^Toggle ", ""):sub(1, 8),
+        action = S.tkAction, mode = "Tap", size = S.tkSize })
+    if not S.tkShow then pcall(function() tkShowToggle:Set(true) end) if not S.tkShow then S.tkShow = true tkRender() end end
+    notify("Buttons", "Action button created.", 3, "check")
+end })
+
+TabDevice:Section({ Title = "Manage buttons" })
+tkDropdown = TabDevice:Dropdown({ Title = "Your buttons", Values = tkLabels(), Value = nil, Callback = function(v)
+    TK.sel = TK.map[v]
+end })
+TabDevice:Input({ Title = "New name", Placeholder = "new name", Callback = function(v) S.tkNewLabel = v or "" end })
+TabDevice:Button({ Title = "Rename selected", Icon = "pencil", Callback = function()
+    local d = tkSelDef()
+    if not d then notify("Buttons", "Select a button.", 3, "alert-circle") return end
+    if S.tkNewLabel == "" then notify("Buttons", "Type a new name.", 3, "alert-circle") return end
+    d.label = S.tkNewLabel:sub(1, 12)
+    tkSave() tkRender() tkRefreshList()
+end })
+TabDevice:Input({ Title = "New key", Placeholder = "e.g. R", Callback = function(v) S.tkNewKey = v or "" end })
+TabDevice:Button({ Title = "Change key of selected", Icon = "keyboard", Callback = function()
+    local d = tkSelDef()
+    if not d or d.action then notify("Buttons", "Select a key button.", 3, "alert-circle") return end
+    local k = parseKey(S.tkNewKey)
+    if not k then notify("Buttons", "Unknown key.", 3, "x") return end
+    d.key, d.parsed = S.tkNewKey, k
+    tkSave() tkRefreshList()
+end })
+TabDevice:Slider({ Title = "Size of selected", Step = 2, Value = { Min = 36, Max = 120, Default = 60 }, Callback = function(v)
+    local d = tkSelDef()
+    if d then
+        d.size = v
+        local o = TK.objs[d.id]
+        if o then o.b.Size = UDim2.fromOffset(v, v) end
+        tkSave()
+    end
+end })
+TabDevice:Button({ Title = "Reset position of selected", Icon = "crosshair", Callback = function()
+    local d = tkSelDef()
+    if not d then return end
+    d.x, d.y = 0.5, 0.5
+    tkSave() tkRender()
+end })
+TabDevice:Button({ Title = "Delete selected", Icon = "trash-2", Callback = function()
+    for i, d in ipairs(TK.defs) do
+        if d.id == TK.sel then table.remove(TK.defs, i) break end
+    end
+    TK.sel = nil
+    tkSave() tkRender() tkRefreshList()
+end })
+TabDevice:Button({ Title = "Delete all buttons", Icon = "x-circle", Callback = function()
+    TK.defs, TK.sel = {}, nil
+    tkSave() tkRender() tkRefreshList()
+end })
+
+TabDevice:Section({ Title = "Performance" })
+TabDevice:Slider({ Title = "FPS cap (0 = unlimited)", Step = 5, Value = { Min = 0, Max = 240, Default = 0 }, Callback = function(v)
+    S.fpsCap = v
+    if setfpscap then pcall(setfpscap, v == 0 and 1000 or v) end
+end })
+
+function Hub.destroyTouchKeys()
+    tkClearObjs()
+    if TK.gui then pcall(function() TK.gui:Destroy() end) end
+end
+
 ---------------------------------------------------------------- CONFIGS
 TabConfigs:Section({ Title = "Configs" })
 local cfgName = "default"
@@ -1307,6 +1829,10 @@ function Hub.Unload()
     setFly(false)
     clearPlatforms()
     destroyPreview()
+    Device.mode = "Off"
+    if Hub.destroyTouchKeys then Hub.destroyTouchKeys() end
+    clearEsp()
+    pcall(function() workspace.Gravity = 196.2 end)
     for _, c in ipairs(Hub.Conns) do pcall(function() c:Disconnect() end) end
     pcall(function() Window:Destroy() end)
 end

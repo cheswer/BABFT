@@ -28,6 +28,7 @@ local VirtualUser  = game:GetService("VirtualUser")
 local AssetService = game:GetService("AssetService")
 local MarketplaceService = game:GetService("MarketplaceService")
 local GuiService = game:GetService("GuiService")
+local StarterGui = game:GetService("StarterGui")
 
 local LP = Players.LocalPlayer
 local Hub = { Conns = {}, Version = VERSION }
@@ -137,6 +138,7 @@ local S = {
     tkShow = false, tkLocked = false, tkOpacity = 0.25,
     tkLabel = "", tkPreset = "E", tkCustom = "", tkMode = "Tap", tkSize = 60, tkAction = "Toggle fly",
     tkNewLabel = "", tkNewKey = "", fpsCap = 0,
+    plMode = "Game default", plWidth = 200, hbOn = false, hbSize = 38, hbHideCore = true,
     -- slots / comunidad
     boatPath = "", slotName = "", slotNew = "", slotsUnlock = false,
     catSearch = "", catBrowse = "All", catSort = "Newest", repReason = "Inappropriate content",
@@ -1381,7 +1383,7 @@ end }))
 reg("kb_stop", TabKeys:Keybind({ Title = "Stop building", Value = "K", Callback = function() Build.running = false end }))
 
 ---------------------------------------------------------------- DEVICE SPOOF
-local Device = { mode = "Off", platform = true }
+local Device = { mode = "Off", platform = true, keepControls = true }
 local DevProfiles = {
     PC = { TouchEnabled = false, KeyboardEnabled = true, MouseEnabled = true, GamepadEnabled = false,
            lastInput = Enum.UserInputType.Keyboard, platform = Enum.Platform.Windows },
@@ -1390,6 +1392,19 @@ local DevProfiles = {
     Console = { TouchEnabled = false, KeyboardEnabled = false, MouseEnabled = false, GamepadEnabled = true,
            lastInput = Enum.UserInputType.Gamepad1, platform = Enum.Platform.XBoxOne },
 }
+-- Los scripts de Roblox que manejan los controles tactiles (PlayerModule) deben ver
+-- siempre el dispositivo REAL; asi el stick y el boton de salto no desaparecen.
+local function inControlModule(inst)
+    local ps = LP:FindFirstChild("PlayerScripts")
+    local pm = ps and ps:FindFirstChild("PlayerModule")
+    return pm ~= nil and typeof(inst) == "Instance" and (inst == pm or inst:IsDescendantOf(pm))
+end
+local function fromControlModule()
+    if not getcallingscript then return false end
+    local ok, cs = pcall(getcallingscript)
+    return ok and cs ~= nil and inControlModule(cs)
+end
+
 local hooksInstalled = false
 local function installHooks()
     if hooksInstalled then return true end
@@ -1400,7 +1415,7 @@ local function installHooks()
     oldIdx = hookmetamethod(game, "__index", wrap(function(self, key)
         if Device.mode ~= "Off" and self == UIS and not checkcaller() then
             local v = DevProfiles[Device.mode][key]
-            if v ~= nil and type(v) == "boolean" then return v end
+            if type(v) == "boolean" and not (Device.keepControls and fromControlModule()) then return v end
         end
         return oldIdx(self, key)
     end))
@@ -1409,6 +1424,11 @@ local function installHooks()
         if Device.mode ~= "Off" and not checkcaller() then
             local m = getnamecallmethod()
             local prof = DevProfiles[Device.mode]
+            if self == UIS and Device.keepControls
+                and (m == "GetLastInputType" or m == "GetPlatform" or m == "GetGamepadConnected" or m == "GamepadSupports")
+                and fromControlModule() then
+                return oldNC(self, ...)
+            end
             if self == UIS then
                 if m == "GetLastInputType" then return prof.lastInput end
                 if m == "GetPlatform" and Device.platform then return prof.platform end
@@ -1423,8 +1443,24 @@ local function installHooks()
 end
 
 local function pulseInput()
+    if Device.mode == "Off" then
+        -- volver a la normalidad: se avisa a todos el tipo de input real
+        if firesignal then pcall(function() firesignal(UIS.LastInputTypeChanged, UIS:GetLastInputType()) end) end
+        return
+    end
     local prof = DevProfiles[Device.mode]
-    if prof and firesignal then
+    if not prof then return end
+    if Device.keepControls and getconnections then
+        -- se avisa a todos menos al modulo de controles (si no, cambiaria a teclado y quitaria el stick)
+        for _, c in ipairs(getconnections(UIS.LastInputTypeChanged)) do
+            local fn = c.Function
+            if fn then
+                local ok, env = pcall(getfenv, fn)
+                local sc = ok and type(env) == "table" and env.script
+                if not inControlModule(sc) then pcall(fn, prof.lastInput) end
+            end
+        end
+    elseif not Device.keepControls and firesignal then
         pcall(function() firesignal(UIS.LastInputTypeChanged, prof.lastInput) end)
     end
 end
@@ -1443,6 +1479,9 @@ reg("dv_mode", TabDevice:Dropdown({ Title = "Pretend I'm on", Values = { "Off", 
     Device.mode = v
     task.delay(0.2, pulseInput)
     notify("Device", v == "Off" and "Spoof off." or ("Now pretending: " .. v), 3, "monitor")
+end }))
+reg("dv_keepctl", TabDevice:Toggle({ Title = "Keep mobile controls (stick & jump)", Value = true, Callback = function(v)
+    Device.keepControls = v
 end }))
 reg("dv_platform", TabDevice:Toggle({ Title = "Also fake platform / console UI", Value = true, Callback = function(v) Device.platform = v end }))
 TabDevice:Button({ Title = "Refresh game input detection", Icon = "refresh-cw", Callback = function()
@@ -1775,6 +1814,264 @@ TabDevice:Slider({ Title = "FPS cap (0 = unlimited)", Step = 5, Value = { Min = 
     if setfpscap then pcall(setfpscap, v == 0 and 1000 or v) end
 end })
 
+-- ------------------------------------------------ UI estilo PC
+TabDevice:Section({ Title = "PC-style UI" })
+
+local CoreOrig = {}
+local function forceCore(ctype, v)
+    if CoreOrig[ctype] == nil then
+        local ok, cur = pcall(StarterGui.GetCoreGuiEnabled, StarterGui, ctype)
+        CoreOrig[ctype] = ok and cur or true
+    end
+    local ok, cur = pcall(StarterGui.GetCoreGuiEnabled, StarterGui, ctype)
+    if not ok or cur ~= v then pcall(StarterGui.SetCoreGuiEnabled, StarterGui, ctype, v) end
+end
+local function restoreCore(ctype)
+    if CoreOrig[ctype] ~= nil then
+        pcall(StarterGui.SetCoreGuiEnabled, StarterGui, ctype, CoreOrig[ctype])
+        CoreOrig[ctype] = nil
+    end
+end
+
+-- lista de jugadores propia (arriba a la derecha, como en PC)
+local PL = { rows = {} }
+local function plDestroy()
+    if PL.gui then pcall(function() PL.gui:Destroy() end) end
+    PL.gui, PL.frame, PL.rows = nil, nil, {}
+end
+local function plCreate()
+    plDestroy()
+    local g = Instance.new("ScreenGui")
+    g.Name = "R4N_PlayerList" g.ResetOnSpawn = false g.DisplayOrder = 800
+    pcall(function() g.Parent = (gethui and gethui()) or game:GetService("CoreGui") end)
+    if not g.Parent then g.Parent = LP:WaitForChild("PlayerGui") end
+    local f = Instance.new("Frame")
+    f.AnchorPoint = Vector2.new(1, 0) f.Position = UDim2.new(1, -8, 0, 8)
+    f.Size = UDim2.fromOffset(S.plWidth, 0) f.AutomaticSize = Enum.AutomaticSize.Y
+    f.BackgroundColor3 = NAVY f.BackgroundTransparency = 0.35
+    f.Parent = g
+    local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 8) c.Parent = f
+    local pad = Instance.new("UIPadding")
+    pad.PaddingLeft = UDim.new(0, 6) pad.PaddingRight = UDim.new(0, 6) pad.PaddingTop = UDim.new(0, 4) pad.PaddingBottom = UDim.new(0, 4)
+    pad.Parent = f
+    local l = Instance.new("UIListLayout") l.SortOrder = Enum.SortOrder.LayoutOrder l.Padding = UDim.new(0, 2) l.Parent = f
+    PL.gui, PL.frame = g, f
+end
+local function plRefresh()
+    if not PL.frame then return end
+    PL.frame.Size = UDim2.fromOffset(S.plWidth, 0)
+    local list = Players:GetPlayers()
+    table.sort(list, function(a, b)
+        local ta, tb = a.Team and a.Team.Name or "", b.Team and b.Team.Name or ""
+        if ta ~= tb then return ta < tb end
+        return a.DisplayName:lower() < b.DisplayName:lower()
+    end)
+    local seen = {}
+    for i, pl in ipairs(list) do
+        seen[pl] = true
+        local row = PL.rows[pl]
+        if not row then
+            row = Instance.new("Frame")
+            row.Size = UDim2.new(1, 0, 0, 20) row.BackgroundTransparency = 1
+            local n = Instance.new("TextLabel") n.Name = "n"
+            n.BackgroundTransparency = 1 n.Size = UDim2.new(0.65, 0, 1, 0) n.Font = Enum.Font.GothamMedium n.TextSize = 13
+            n.TextXAlignment = Enum.TextXAlignment.Left n.TextTruncate = Enum.TextTruncate.AtEnd n.Parent = row
+            local v = Instance.new("TextLabel") v.Name = "v"
+            v.BackgroundTransparency = 1 v.Position = UDim2.new(0.65, 0, 0, 0) v.Size = UDim2.new(0.35, 0, 1, 0)
+            v.Font = Enum.Font.GothamMedium v.TextSize = 13 v.TextColor3 = GOLD
+            v.TextXAlignment = Enum.TextXAlignment.Right v.TextTruncate = Enum.TextTruncate.AtEnd v.Parent = row
+            row.Parent = PL.frame
+            PL.rows[pl] = row
+        end
+        row.LayoutOrder = i
+        local n, v = row:FindFirstChild("n"), row:FindFirstChild("v")
+        n.Text = pl.DisplayName
+        n.TextColor3 = (pl == LP) and GOLD or ((pl.Team and pl.TeamColor.Color) or CREAM)
+        local vals = {}
+        local ls = pl:FindFirstChild("leaderstats")
+        if ls then
+            for _, st in ipairs(ls:GetChildren()) do
+                if st:IsA("ValueBase") and #vals < 2 then vals[#vals + 1] = tostring(st.Value) end
+            end
+        end
+        v.Text = table.concat(vals, "  ")
+    end
+    for pl, row in pairs(PL.rows) do
+        if not seen[pl] then row:Destroy() PL.rows[pl] = nil end
+    end
+end
+TabDevice:Dropdown({ Title = "Player list", Values = { "Game default", "Roblox list (forced on)", "Hub list (PC style)" },
+    Value = "Game default", Callback = function(v)
+        S.plMode = v
+        if v == "Hub list (PC style)" then plCreate() plRefresh() else plDestroy() end
+        if v == "Game default" then restoreCore(Enum.CoreGuiType.PlayerList) end
+    end })
+TabDevice:Slider({ Title = "Hub list width", Step = 10, Value = { Min = 150, Max = 320, Default = 200 }, Callback = function(v) S.plWidth = v end })
+
+-- hotbar propia: todas las tools abajo, botones pequeños
+local HB = { btns = {}, conns = {}, seen = {}, count = 0 }
+local function hbTools()
+    local list = {}
+    local bp = LP:FindFirstChildOfClass("Backpack")
+    if bp then for _, t in ipairs(bp:GetChildren()) do if t:IsA("Tool") then list[#list + 1] = t end end end
+    local c = char()
+    if c then for _, t in ipairs(c:GetChildren()) do if t:IsA("Tool") then list[#list + 1] = t end end end
+    for _, t in ipairs(list) do
+        if not HB.seen[t] then HB.count += 1 HB.seen[t] = HB.count end
+    end
+    table.sort(list, function(a, b) return HB.seen[a] < HB.seen[b] end)
+    return list
+end
+local function hbEquip(t)
+    local h = hum()
+    if not h or not t or not t.Parent then return end
+    if t.Parent == char() then h:UnequipTools() else h:EquipTool(t) end
+end
+local function hbRebuild()
+    for _, b in ipairs(HB.btns) do pcall(function() b:Destroy() end) end
+    HB.btns = {}
+    if not HB.frame then return end
+    for i, t in ipairs(hbTools()) do
+        local equipped = t.Parent == char()
+        local b = Instance.new("TextButton")
+        b.LayoutOrder = i b.Size = UDim2.fromOffset(S.hbSize, S.hbSize)
+        b.BackgroundColor3 = NAVY b.BackgroundTransparency = 0.2 b.AutoButtonColor = true
+        b.Text = "" b.Parent = HB.frame
+        local c = Instance.new("UICorner") c.CornerRadius = UDim.new(0, 6) c.Parent = b
+        local st = Instance.new("UIStroke") st.Thickness = 2 st.Color = equipped and GOLD or Color3.fromHex("#2A4A6B") st.Parent = b
+        if t.TextureId ~= "" then
+            local im = Instance.new("ImageLabel")
+            im.BackgroundTransparency = 1 im.Size = UDim2.new(1, -6, 1, -6) im.Position = UDim2.fromOffset(3, 3)
+            im.Image = t.TextureId im.Parent = b
+        else
+            b.Text = t.Name b.TextColor3 = CREAM b.Font = Enum.Font.GothamMedium b.TextScaled = true
+            local pd = Instance.new("UIPadding")
+            pd.PaddingLeft = UDim.new(0, 3) pd.PaddingRight = UDim.new(0, 3) pd.PaddingTop = UDim.new(0, 5) pd.PaddingBottom = UDim.new(0, 3)
+            pd.Parent = b
+        end
+        if i <= 9 then
+            local nl = Instance.new("TextLabel")
+            nl.BackgroundTransparency = 1 nl.Position = UDim2.fromOffset(3, 0) nl.Size = UDim2.fromOffset(12, 12)
+            nl.Text = tostring(i) nl.TextColor3 = GOLD nl.Font = Enum.Font.GothamBold nl.TextSize = 10
+            nl.TextXAlignment = Enum.TextXAlignment.Left nl.Parent = b
+        end
+        b.MouseButton1Click:Connect(function() hbEquip(t) end)
+        HB.btns[#HB.btns + 1] = b
+    end
+end
+local function hbQueue()
+    if HB.q then return end
+    HB.q = true
+    task.defer(function() HB.q = false hbRebuild() end)
+end
+local function hbBindChar(c)
+    if not c then return end
+    table.insert(HB.conns, c.ChildAdded:Connect(hbQueue))
+    table.insert(HB.conns, c.ChildRemoved:Connect(hbQueue))
+end
+local function hbBindBackpack(bp)
+    if not bp then return end
+    table.insert(HB.conns, bp.ChildAdded:Connect(hbQueue))
+    table.insert(HB.conns, bp.ChildRemoved:Connect(hbQueue))
+end
+local function hbDestroy()
+    for _, c in ipairs(HB.conns) do pcall(function() c:Disconnect() end) end
+    HB.conns = {}
+    for _, b in ipairs(HB.btns) do pcall(function() b:Destroy() end) end
+    HB.btns = {}
+    if HB.gui then pcall(function() HB.gui:Destroy() end) end
+    HB.gui, HB.frame = nil, nil
+    restoreCore(Enum.CoreGuiType.Backpack)
+end
+local function hbCreate()
+    hbDestroy()
+    local g = Instance.new("ScreenGui")
+    g.Name = "R4N_Hotbar" g.ResetOnSpawn = false g.DisplayOrder = 850
+    pcall(function() g.Parent = (gethui and gethui()) or game:GetService("CoreGui") end)
+    if not g.Parent then g.Parent = LP:WaitForChild("PlayerGui") end
+    local f = Instance.new("Frame")
+    f.BackgroundTransparency = 1 f.AnchorPoint = Vector2.new(0.5, 1) f.Position = UDim2.new(0.5, 0, 1, -6)
+    f.Size = UDim2.new(0.55, 0, 0, 0) f.AutomaticSize = Enum.AutomaticSize.Y
+    f.Parent = g
+    local l = Instance.new("UIListLayout")
+    l.FillDirection = Enum.FillDirection.Horizontal l.HorizontalAlignment = Enum.HorizontalAlignment.Center
+    l.VerticalAlignment = Enum.VerticalAlignment.Bottom l.SortOrder = Enum.SortOrder.LayoutOrder l.Padding = UDim.new(0, 4)
+    pcall(function() l.Wraps = true end)
+    l.Parent = f
+    HB.gui, HB.frame = g, f
+    hbBindChar(char())
+    hbBindBackpack(LP:FindFirstChildOfClass("Backpack"))
+    table.insert(HB.conns, LP.CharacterAdded:Connect(function(c) hbBindChar(c) hbQueue() end))
+    table.insert(HB.conns, LP.ChildAdded:Connect(function(ch)
+        if ch:IsA("Backpack") then hbBindBackpack(ch) hbQueue() end
+    end))
+    hbRebuild()
+end
+local digitIndex = {
+    [Enum.KeyCode.One] = 1, [Enum.KeyCode.Two] = 2, [Enum.KeyCode.Three] = 3, [Enum.KeyCode.Four] = 4, [Enum.KeyCode.Five] = 5,
+    [Enum.KeyCode.Six] = 6, [Enum.KeyCode.Seven] = 7, [Enum.KeyCode.Eight] = 8, [Enum.KeyCode.Nine] = 9,
+}
+track(UIS.InputBegan:Connect(function(input, gp)
+    if gp or not S.hbOn then return end
+    local i = digitIndex[input.KeyCode]
+    if i then hbEquip(hbTools()[i]) end
+end))
+
+reg("dv_hotbar", TabDevice:Toggle({ Title = "Hub hotbar (all tools at the bottom)", Value = false, Callback = function(v)
+    S.hbOn = v
+    if v then hbCreate() else hbDestroy() end
+end }))
+reg("dv_hbsize", TabDevice:Slider({ Title = "Tool button size", Step = 2, Value = { Min = 28, Max = 64, Default = 38 }, Callback = function(v)
+    S.hbSize = v
+    for _, b in ipairs(HB.btns) do b.Size = UDim2.fromOffset(v, v) end
+end }))
+reg("dv_hbhide", TabDevice:Toggle({ Title = "Hide Roblox backpack while hotbar is on", Value = true, Callback = function(v)
+    S.hbHideCore = v
+    if not v then restoreCore(Enum.CoreGuiType.Backpack) end
+end }))
+
+-- vigilante: mantiene los controles tactiles y la UI estilo PC aunque el juego intente quitarlos
+task.spawn(function()
+    local missing = 0
+    while task.wait(0.75) do
+        if Hub.Dead then break end
+        if Device.mode == "PC" or Device.mode == "Console" then
+            if Device.keepControls and UIS.TouchEnabled then
+                local pg = LP:FindFirstChild("PlayerGui")
+                local tg = pg and pg:FindFirstChild("TouchGui")
+                if tg then
+                    missing = 0
+                    if not tg.Enabled then tg.Enabled = true end
+                    local f = tg:FindFirstChild("TouchControlFrame")
+                    if f and not f.Visible then f.Visible = true end
+                else
+                    missing += 1
+                    if missing >= 3 then
+                        missing = 0
+                        pcall(function()
+                            local pm = require(LP.PlayerScripts:WaitForChild("PlayerModule"))
+                            pm:GetControls():Enable(true)
+                        end)
+                    end
+                end
+            end
+        end
+        if S.hbOn and S.hbHideCore then forceCore(Enum.CoreGuiType.Backpack, false) end
+        if S.plMode == "Roblox list (forced on)" then forceCore(Enum.CoreGuiType.PlayerList, true)
+        elseif S.plMode == "Hub list (PC style)" then
+            forceCore(Enum.CoreGuiType.PlayerList, false)
+            if not PL.gui then plCreate() end
+            plRefresh()
+        end
+    end
+end)
+
+function Hub.destroyPcUi()
+    plDestroy()
+    hbDestroy()
+    restoreCore(Enum.CoreGuiType.PlayerList)
+end
+
 function Hub.destroyTouchKeys()
     tkClearObjs()
     if TK.gui then pcall(function() TK.gui:Destroy() end) end
@@ -1831,6 +2128,7 @@ function Hub.Unload()
     destroyPreview()
     Device.mode = "Off"
     if Hub.destroyTouchKeys then Hub.destroyTouchKeys() end
+    if Hub.destroyPcUi then Hub.destroyPcUi() end
     clearEsp()
     pcall(function() workspace.Gravity = 196.2 end)
     for _, c in ipairs(Hub.Conns) do pcall(function() c:Disconnect() end) end
